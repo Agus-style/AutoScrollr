@@ -11,86 +11,109 @@
         android:layout_height="wrap_content"
         tools:ignore="UselessParent">
 
+        <!-- COLLAPSED VIEW -->
         <RelativeLayout
             android:id="@+id/collapse_view"
             android:layout_width="wrap_content"
-            android:visibility="visible"
             android:layout_height="wrap_content"
-            android:orientation="vertical">
+            android:visibility="visible">
 
             <ImageView
                 android:id="@+id/collapsed_iv"
-                android:layout_width="60dp"
-                android:layout_height="60dp"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
                 android:layout_marginTop="8dp"
                 android:src="@mipmap/ic_launcher_round"
+                android:elevation="4dp"
                 tools:ignore="ContentDescription"/>
 
             <ImageView
-                android:background="@color/colorPrimary"
                 android:id="@+id/close_btn"
                 android:layout_width="20dp"
                 android:layout_height="20dp"
-                android:layout_marginLeft="40dp"
+                android:layout_marginStart="38dp"
+                android:background="@color/colorPrimary"
                 android:src="@drawable/ic_close_white_24dp"
+                android:padding="2dp"
                 tools:ignore="ContentDescription"/>
+
         </RelativeLayout>
 
+        <!-- EXPANDED VIEW -->
         <LinearLayout
             android:id="@+id/expanded_container"
-            android:layout_width="wrap_content"
+            android:layout_width="160dp"
             android:layout_height="wrap_content"
-            android:background="@color/colorPrimary"
+            android:background="#E6111318"
             android:visibility="gone"
-            android:orientation="horizontal"
-            android:padding="8dp">
+            android:orientation="vertical"
+            android:padding="10dp"
+            android:elevation="8dp">
 
-            <ImageView
-                android:id="@+id/prev_btn"
-                android:layout_width="30dp"
-                android:layout_height="30dp"
-                android:layout_gravity="center_vertical"
-                android:layout_marginLeft="10dp"
-                android:src="@drawable/ic_fast_rewind_white_24dp"
-                tools:ignore="ContentDescription"/>
-
-            <ImageView
-                android:id="@+id/play_btn"
-                android:layout_width="50dp"
-                android:layout_height="50dp"
-                android:layout_gravity="center_vertical"
-                android:layout_marginLeft="10dp"
-                android:src="@drawable/ic_play_arrow_white_24dp"
-                tools:ignore="ContentDescription"/>
-
-            <ImageView
-                android:id="@+id/next_btn"
-                android:layout_width="30dp"
-                android:layout_height="30dp"
-                android:layout_gravity="center_vertical"
-                android:layout_marginLeft="10dp"
-                android:layout_marginRight="10dp"
-                android:src="@drawable/ic_fast_forward_white_24dp"
-                tools:ignore="ContentDescription"/>
-
+            <!-- Header: status + tombol close -->
             <RelativeLayout
-                android:layout_width="wrap_content"
-                android:layout_height="match_parent"
-                android:orientation="vertical">
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp">
+
+                <TextView
+                    android:id="@+id/tv_float_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Berjalan..."
+                    android:textColor="#f0f0ff"
+                    android:textSize="11sp"
+                    android:layout_centerVertical="true"/>
 
                 <ImageView
                     android:id="@+id/close_button"
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:src="@drawable/ic_close_white_24dp"/>
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_alignParentEnd="true"
+                    android:src="@drawable/ic_close_white_24dp"
+                    tools:ignore="ContentDescription"/>
 
-                <ImageView
-                    android:id="@+id/change_direction_button"
-                    android:layout_width="20dp"
-                    android:layout_height="20dp"
-                    android:layout_alignParentBottom="true"
-                    android:src="@drawable/ic_rotate_left_white_24dp"/>
             </RelativeLayout>
+
+            <!-- Durasi video realtime -->
+            <TextView
+                android:id="@+id/tv_float_duration"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="0:00"
+                android:textColor="#25f4ee"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:gravity="center"
+                android:layout_marginBottom="10dp"/>
+
+            <!-- Divider -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#33ffffff"
+                android:layout_marginBottom="10dp"/>
+
+            <!-- Tombol Play/Pause -->
+            <ImageView
+                android:id="@+id/play_btn"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="center_horizontal"
+                android:src="@drawable/ic_play_arrow_white_24dp"
+                android:background="#33ffffff"
+                android:padding="8dp"
+                tools:ignore="ContentDescription"/>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tap untuk Play/Pause"
+                android:textColor="#6b6b8a"
+                android:textSize="9sp"
+                android:gravity="center"
+                android:layout_marginTop="4dp"/>
+
         </LinearLayout>
     </RelativeLayout>
 </FrameLayout>
