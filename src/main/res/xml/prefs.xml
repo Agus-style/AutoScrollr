@@ -1,9 +1,54 @@
-<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android" android:key="preferenceScreen">
-    <PreferenceCategory android:title="Main" android:key="mainSettings">
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="autoStartOnBoot"
-            android:summary="Automatically start the AutoScrollr service on startup"
-            android:title="Start on boot up" />
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory android:title="Scroll">
+
+        <ListPreference
+            android:key="defaultVideoDuration"
+            android:title="Durasi Default Video"
+            android:summary="Dipakai kalau durasi tidak terdeteksi"
+            android:entries="@array/duration_entries"
+            android:entryValues="@array/duration_values"
+            android:defaultValue="15000"/>
+
+        <ListPreference
+            android:key="extraDelay"
+            android:title="Jeda Tambahan"
+            android:summary="Waktu tambahan setelah video selesai"
+            android:entries="@array/delay_entries"
+            android:entryValues="@array/delay_values"
+            android:defaultValue="500"/>
+
     </PreferenceCategory>
+
+    <PreferenceCategory android:title="TikTok">
+
+        <SwitchPreference
+            android:key="skipLive"
+            android:title="Skip LIVE Otomatis"
+            android:summary="Lewati video LIVE secara otomatis"
+            android:defaultValue="true"/>
+
+        <SwitchPreference
+            android:key="autoLike"
+            android:title="Auto Like"
+            android:summary="Like video secara otomatis saat scroll"
+            android:defaultValue="false"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Umum">
+
+        <SwitchPreference
+            android:key="autoStartOnBoot"
+            android:title="Mulai Saat Booting"
+            android:summary="Buka app otomatis setelah HP restart"
+            android:defaultValue="false"/>
+
+        <Preference
+            android:title="Versi"
+            android:summary="TikTok AutoScrollr v2.0"/>
+
+    </PreferenceCategory>
+
 </PreferenceScreen>
