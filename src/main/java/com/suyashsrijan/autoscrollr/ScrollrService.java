@@ -1,309 +1,315 @@
 package com.suyashsrijan.autoscrollr;
 
+import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.Service;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.PixelFormat;
-import android.graphics.Point;
-import android.os.AsyncTask;
-import android.os.IBinder;
+import android.content.SharedPreferences;
+import android.graphics.Path;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.preference.PreferenceManager;
 import android.support.v4.app.NotificationCompat;
-import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
-import android.view.Gravity;
-import android.view.LayoutInflater;
-import android.view.MotionEvent;
-import android.view.View;
-import android.view.WindowManager;
-import android.widget.ImageView;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
 
-import eu.chainfire.libsuperuser.Shell;
+public class ScrollrService extends AccessibilityService {
 
+    private static final String TAG = "AutoScrollr-Service";
+    private static final String CHANNEL_ID = "autoscrollr_channel";
+    private static final String TIKTOK_PACKAGE = "com.zhiliaoapp.musically";
+    private static final String TIKTOK_PACKAGE_ALT = "com.ss.android.ugc.trill";
+    private static final long DEFAULT_VIDEO_DURATION = 15000;
+    private static final long LIVE_CHECK_DELAY = 1500;
+    private static final long SCROLL_ANIMATION_DURATION = 400;
 
-public class ScrollrService extends Service {
-    public ScrollrService() {
-    }
+    public static ScrollrService instance;
 
-    private static String TAG = "AutoScrollr-Service";
-    private static Shell.Interactive rootSession;
-    private NotificationCompat.Builder mBuilder;
-    private StartScrollrBroadcast startScrollrBroadcast;
-    private WindowManager mWindowManager;
-    private View mFloatingView;
-    private Point centerPoint;
-    private boolean isAutoScrolling = false;
-    private int scrollSpeed = 3000;
-    private boolean scrollDown = true;
-    private Timer scrollTimer;
+    private Handler handler = new Handler(Looper.getMainLooper());
+    private Runnable scrollRunnable;
+    private boolean isRunning = false;
+    private boolean isPaused = false;
+    private long currentVideoDuration = DEFAULT_VIDEO_DURATION;
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        mBuilder = new NotificationCompat.Builder(this);
-        startScrollrBroadcast = new StartScrollrBroadcast();
-        LocalBroadcastManager.getInstance(this).registerReceiver(startScrollrBroadcast, new IntentFilter("start-scrollr"));
-        executeCommandWithRoot("whoami"); // Init interactive root shell
-        if (!Utils.isSystemAlertWindowPermissionGranted(getApplicationContext())) {
-            executeCommandWithRoot("pm grant com.suyashsrijan.autoscrollr android.permission.SYSTEM_ALERT_WINDOW");
+    private BroadcastReceiver controlReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getStringExtra("action");
+            if (action == null) return;
+            switch (action) {
+                case "start":  startAutoScroll(); break;
+                case "stop":   stopAutoScroll();  break;
+                case "pause":  pauseAutoScroll(); break;
+                case "resume": resumeAutoScroll(); break;
+            }
         }
-        registerReceiver(startScrollrBroadcast, new IntentFilter("com.suyashsrijan.autoscrollr.OPEN_WIDGET"));
-        centerPoint = Utils.getDisplayCenterCoordinates(getApplicationContext());
+    };
+
+    @Override
+    public void onServiceConnected() {
+        super.onServiceConnected();
+        instance = this;
+        Log.i(TAG, "AccessibilityService connected");
+        registerReceiver(controlReceiver,
+            new IntentFilter("com.suyashsrijan.autoscrollr.CONTROL"));
+        showNotification();
+        sendStatusBroadcast("connected");
     }
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        super.onStartCommand(intent, flags, startId);
-        Log.i(TAG, "Service has now started");
-        showNotification();
-        return START_STICKY;
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (!isRunning || isPaused) return;
+        String pkg = event.getPackageName() != null ? event.getPackageName().toString() : "";
+        if (!pkg.equals(TIKTOK_PACKAGE) && !pkg.equals(TIKTOK_PACKAGE_ALT)) return;
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+            event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            checkAndSkipLive();
+        }
+    }
+
+    @Override
+    public void onInterrupt() {
+        stopAutoScroll();
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        Log.i(TAG, "Stopping service");
-        if (rootSession != null) {
-            rootSession.close();
-            rootSession = null;
+        instance = null;
+        stopAutoScroll();
+        try { unregisterReceiver(controlReceiver); } catch (Exception ignored) {}
+    }
+
+    public void startAutoScroll() {
+        if (isRunning) return;
+        isRunning = true;
+        isPaused = false;
+        Log.i(TAG, "Starting Scrollr");
+        sendStatusBroadcast("started");
+        scheduleNextScroll(LIVE_CHECK_DELAY);
+    }
+
+    public void stopAutoScroll() {
+        isRunning = false;
+        isPaused = false;
+        if (scrollRunnable != null) handler.removeCallbacks(scrollRunnable);
+        Log.i(TAG, "Stopping Scrollr");
+        sendStatusBroadcast("stopped");
+    }
+
+    public void pauseAutoScroll() {
+        isPaused = true;
+        if (scrollRunnable != null) handler.removeCallbacks(scrollRunnable);
+        sendStatusBroadcast("paused");
+    }
+
+    public void resumeAutoScroll() {
+        if (!isRunning) return;
+        isPaused = false;
+        sendStatusBroadcast("started");
+        scheduleNextScroll(500);
+    }
+
+    public boolean isRunning() { return isRunning; }
+    public boolean isPaused()  { return isPaused; }
+
+    private void scheduleNextScroll(long delayMs) {
+        if (scrollRunnable != null) handler.removeCallbacks(scrollRunnable);
+        scrollRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (!isRunning || isPaused) return;
+                if (isSkipLiveEnabled() && isCurrentlyLive()) {
+                    Log.i(TAG, "LIVE detected - skipping");
+                    sendStatusBroadcast("live_skipped");
+                    performSwipeUp();
+                    scheduleNextScroll(LIVE_CHECK_DELAY + SCROLL_ANIMATION_DURATION);
+                    return;
+                }
+                long duration = detectVideoDuration();
+                currentVideoDuration = duration;
+                Log.i(TAG, "Video duration: " + duration + "ms");
+                sendDurationBroadcast(duration);
+                long extraDelay = getExtraDelayFromPrefs();
+                scheduleNextScroll(duration + SCROLL_ANIMATION_DURATION + extraDelay);
+                handler.postDelayed(() -> {
+                    if (!isRunning || isPaused) return;
+                    performSwipeUp();
+                    sendStatusBroadcast("scrolled");
+                }, duration);
+            }
+        };
+        handler.postDelayed(scrollRunnable, delayMs);
+    }
+
+    private boolean isCurrentlyLive() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return false;
+        try {
+            String[] liveKeywords = {"LIVE", "Live", "SIARAN LANGSUNG"};
+            for (String keyword : liveKeywords) {
+                List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(keyword);
+                if (nodes != null) {
+                    for (AccessibilityNodeInfo node : nodes) {
+                        CharSequence text = node.getText();
+                        if (text != null && text.toString().trim().equalsIgnoreCase("LIVE")) {
+                            root.recycle();
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking LIVE: " + e.getMessage());
         }
-        if (mFloatingView != null || mFloatingView.getWindowToken() != null) {
-            try {
-                mWindowManager.removeView(mFloatingView);
-            } catch (Exception e) {
-                e.printStackTrace();
+        root.recycle();
+        return false;
+    }
+
+    private void checkAndSkipLive() {
+        handler.postDelayed(() -> {
+            if (!isRunning || isPaused) return;
+            if (isCurrentlyLive()) {
+                if (scrollRunnable != null) handler.removeCallbacks(scrollRunnable);
+                sendStatusBroadcast("live_skipped");
+                performSwipeUp();
+                scheduleNextScroll(LIVE_CHECK_DELAY);
+            }
+        }, 600);
+    }
+
+    private long detectVideoDuration() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return getDefaultDurationFromPrefs();
+        long duration = getDefaultDurationFromPrefs();
+        try {
+            duration = readFromSeekBar(root);
+            if (duration == getDefaultDurationFromPrefs()) {
+                long fromText = searchDurationInNode(root);
+                if (fromText > 0) duration = fromText;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Duration detect error: " + e.getMessage());
+        }
+        root.recycle();
+        return duration;
+    }
+
+    private long readFromSeekBar(AccessibilityNodeInfo root) {
+        String[] ids = {
+            TIKTOK_PACKAGE + ":id/progress_bar",
+            TIKTOK_PACKAGE + ":id/video_progress",
+            TIKTOK_PACKAGE + ":id/seek_bar",
+        };
+        for (String resId : ids) {
+            List<AccessibilityNodeInfo> bars = root.findAccessibilityNodeInfosByViewId(resId);
+            if (bars != null && !bars.isEmpty()) {
+                AccessibilityNodeInfo bar = bars.get(0);
+                if (bar.getRangeInfo() != null) {
+                    int max = (int) bar.getRangeInfo().getMax();
+                    if (max > 0) {
+                        long ms = max <= 600 ? max * 1000L : max;
+                        return Math.max(3000, Math.min(ms, 180000));
+                    }
+                }
             }
         }
-        if (scrollTimer != null) {
-            scrollTimer.cancel();
-            scrollTimer.purge();
-        }
-        unregisterReceiver(startScrollrBroadcast);
+        return getDefaultDurationFromPrefs();
     }
 
-    @Override
-    public IBinder onBind(Intent intent) {
-        throw new UnsupportedOperationException("Not yet implemented");
-    }
-
-    class StartScrollrBroadcast extends BroadcastReceiver {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (mFloatingView == null || mFloatingView.getWindowToken() == null) {
-                Log.i(TAG, "Starting Scrollr");
-                mFloatingView = LayoutInflater.from(context).inflate(R.layout.layout_floating_scrollr_widget, null);
-                final WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                        WindowManager.LayoutParams.WRAP_CONTENT,
-                        WindowManager.LayoutParams.WRAP_CONTENT,
-                        WindowManager.LayoutParams.TYPE_PHONE,
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                        PixelFormat.TRANSLUCENT);
-                params.gravity = Gravity.TOP | Gravity.LEFT;
-                params.x = 0;
-                params.y = 100;
-                mWindowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-
-                final View collapsedView = mFloatingView.findViewById(R.id.collapse_view);
-                final View expandedView = mFloatingView.findViewById(R.id.expanded_container);
-
-                mFloatingView.findViewById(R.id.root_container).setOnTouchListener(new View.OnTouchListener() {
-                    private int initialX;
-                    private int initialY;
-                    private float initialTouchX;
-                    private float initialTouchY;
-
-
-                    @Override
-                    public boolean onTouch(View v, MotionEvent event) {
-                        switch (event.getAction()) {
-                            case MotionEvent.ACTION_DOWN:
-                                initialX = params.x;
-                                initialY = params.y;
-                                initialTouchX = event.getRawX();
-                                initialTouchY = event.getRawY();
-                                return true;
-                            case MotionEvent.ACTION_UP:
-                                int Xdiff = (int) (event.getRawX() - initialTouchX);
-                                int Ydiff = (int) (event.getRawY() - initialTouchY);
-                                if (Xdiff < 10 && Ydiff < 10) {
-                                    if (mFloatingView == null || mFloatingView.findViewById(R.id.collapse_view).getVisibility() == View.VISIBLE) {
-                                        collapsedView.setVisibility(View.GONE);
-                                        expandedView.setVisibility(View.VISIBLE);
-                                    }
-                                }
-                                return true;
-                            case MotionEvent.ACTION_MOVE:
-                                params.x = initialX + (int) (event.getRawX() - initialTouchX);
-                                params.y = initialY + (int) (event.getRawY() - initialTouchY);
-                                mWindowManager.updateViewLayout(mFloatingView, params);
-                                return true;
-                        }
-                        return false;
-                    }
-                });
-
-                ImageView closeButtonCollapsed = mFloatingView.findViewById(R.id.close_btn);
-                closeButtonCollapsed.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View view) {
-                        if (mFloatingView != null) mWindowManager.removeView(mFloatingView);
-                        scrollDown = true;
-                    }
-                });
-
-                final ImageView playButton = mFloatingView.findViewById(R.id.play_btn);
-                playButton.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        if (isAutoScrolling) {
-                            Log.i(TAG, "Stopping Scrollr timer");
-                            playButton.setImageResource(R.drawable.ic_play_arrow_white_24dp);
-                            isAutoScrolling = false;
-                            scrollTimer.cancel();
-                            scrollTimer.purge();
-                            scrollTimer = null;
-                        } else {
-                            Log.i(TAG, "Starting Scrollr timer");
-                            playButton.setImageResource(R.drawable.ic_pause_white_24dp);
-                            isAutoScrolling = true;
-                            scrollTimer = new Timer();
-                            scrollTimer.scheduleAtFixedRate(new ScrollrTask(), 0, scrollSpeed);
-                        }
-                    }
-                });
-
-                ImageView nextButton = mFloatingView.findViewById(R.id.next_btn);
-                nextButton.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        if (scrollSpeed > 1500 && scrollTimer != null) {
-                            Log.i(TAG, "Decreasing Scrollr timer interval by 500ms");
-                            scrollSpeed -= 500;
-                            scrollTimer.cancel();
-                            scrollTimer.purge();
-                            scrollTimer = null;
-                            scrollTimer = new Timer();
-                            scrollTimer.scheduleAtFixedRate(new ScrollrTask(), 0, scrollSpeed);
-                        }
-                    }
-                });
-
-                ImageView prevButton = mFloatingView.findViewById(R.id.prev_btn);
-                prevButton.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        if (scrollSpeed < 25000 && scrollTimer != null) {
-                            Log.i(TAG, "Increasing Scrollr timer interval by 500ms");
-                            scrollSpeed += 500;
-                            scrollTimer.cancel();
-                            scrollTimer.purge();
-                            scrollTimer = null;
-                            scrollTimer = new Timer();
-                            scrollTimer.scheduleAtFixedRate(new ScrollrTask(), 0, scrollSpeed);
-                        }
-                    }
-                });
-
-                ImageView closeButton = mFloatingView.findViewById(R.id.close_button);
-                closeButton.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View view) {
-                        collapsedView.setVisibility(View.VISIBLE);
-                        expandedView.setVisibility(View.GONE);
-                    }
-                });
-
-                ImageView changeDirectionButton = mFloatingView.findViewById(R.id.change_direction_button);
-                changeDirectionButton.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View view) {
-                        if (scrollTimer != null) {
-                            Log.i(TAG, "Changing Scrollr direction");
-                            scrollDown ^= true;
-                        }
-                    }
-                });
-                mWindowManager.addView(mFloatingView, params);
-            } else {
-                Log.i(TAG, "Scrollr already open");
+    private long searchDurationInNode(AccessibilityNodeInfo node) {
+        if (node == null) return -1;
+        CharSequence text = node.getText();
+        if (text != null) {
+            String s = text.toString().trim();
+            if (s.matches("\\d+:\\d{2}")) {
+                try {
+                    String[] parts = s.split(":");
+                    long ms = (Long.parseLong(parts[0]) * 60 + Long.parseLong(parts[1])) * 1000L;
+                    if (ms >= 3000 && ms <= 180000) return ms;
+                } catch (NumberFormatException ignored) {}
             }
         }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            long result = searchDurationInNode(child);
+            if (child != null) child.recycle();
+            if (result > 0) return result;
+        }
+        return -1;
     }
 
-    private class ScrollrTask extends TimerTask {
-        @Override
-        public void run() {
-            executeCommandWithRoot("input swipe "
-                    + centerPoint.x + " "
-                    + centerPoint.y + " "
-                    + centerPoint.x + " "
-                    + (scrollDown ? Integer.toString(centerPoint.y - 150) : Integer.toString(centerPoint.y + 150)));
-        }
+    private void performSwipeUp() {
+        int w = getResources().getDisplayMetrics().widthPixels;
+        int h = getResources().getDisplayMetrics().heightPixels;
+        Path path = new Path();
+        path.moveTo(w / 2, (int)(h * 0.75));
+        path.lineTo(w / 2, (int)(h * 0.25));
+        GestureDescription gesture = new GestureDescription.Builder()
+            .addStroke(new GestureDescription.StrokeDescription(path, 0, SCROLL_ANIMATION_DURATION))
+            .build();
+        dispatchGesture(gesture, null, null);
+    }
+
+    private long getDefaultDurationFromPrefs() {
+        try { return Long.parseLong(PreferenceManager
+            .getDefaultSharedPreferences(this).getString("defaultVideoDuration", "15000"));
+        } catch (Exception e) { return DEFAULT_VIDEO_DURATION; }
+    }
+
+    private long getExtraDelayFromPrefs() {
+        try { return Long.parseLong(PreferenceManager
+            .getDefaultSharedPreferences(this).getString("extraDelay", "500"));
+        } catch (Exception e) { return 500L; }
+    }
+
+    private boolean isSkipLiveEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this)
+            .getBoolean("skipLive", true);
     }
 
     public void showNotification() {
-        Intent notificationIntent = new Intent("com.suyashsrijan.autoscrollr.OPEN_WIDGET");
-        PendingIntent intent = PendingIntent.getBroadcast(getApplicationContext(), 0,
-                notificationIntent, 0);
-        Notification n = mBuilder
-                .setContentTitle("AutoScrollr")
-                .setStyle(new NotificationCompat.BigTextStyle().bigText("Tap to open AutoScrollr"))
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setPriority(-2)
-                .setContentIntent(intent)
-                .setOngoing(true).build();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                CHANNEL_ID, "TikTok AutoScrollr", NotificationManager.IMPORTANCE_LOW);
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) nm.createNotificationChannel(channel);
+        }
+        Intent notifIntent = new Intent(this, MainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, notifIntent,
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+        Notification n = new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("TikTok AutoScrollr")
+            .setStyle(new NotificationCompat.BigTextStyle()
+                .bigText("Auto scroll aktif • Ikuti durasi video • Skip LIVE otomatis"))
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pi)
+            .setOngoing(true)
+            .build();
         startForeground(3107, n);
     }
 
-    public void executeCommandWithRoot(final String command) {
-        AsyncTask.execute(new Runnable() {
-            @Override
-            public void run() {
-                if (rootSession != null) {
-                    rootSession.addCommand(command, 0, new Shell.OnCommandResultListener() {
-                        @Override
-                        public void onCommandResult(int commandCode, int exitCode, List<String> output) {
-                            printShellOutput(output);
-                        }
-                    });
-                } else {
-                    rootSession = new Shell.Builder().
-                            useSU().
-                            setWantSTDERR(true).
-                            setWatchdogTimeout(5).
-                            setMinimalLogging(true).
-                            open(new Shell.OnCommandResultListener() {
-                                @Override
-                                public void onCommandResult(int commandCode, int exitCode, List<String> output) {
-                                    if (exitCode != Shell.OnCommandResultListener.SHELL_RUNNING) {
-                                        Log.i(TAG, "Error opening root shell: exitCode " + exitCode);
-                                    } else {
-                                        rootSession.addCommand(command, 0, new Shell.OnCommandResultListener() {
-                                            @Override
-                                            public void onCommandResult(int commandCode, int exitCode, List<String> output) {
-                                                printShellOutput(output);
-                                            }
-                                        });
-                                    }
-                                }
-                            });
-                }
-            }
-        });
+    private void sendStatusBroadcast(String status) {
+        Intent i = new Intent("com.suyashsrijan.autoscrollr.STATUS_UPDATE");
+        i.putExtra("status", status);
+        sendBroadcast(i);
     }
 
-    public void printShellOutput(List<String> output) {
-        if (output != null && !output.isEmpty()) {
-            for (String s : output) {
-                Log.i(TAG, s);
-            }
-        }
+    private void sendDurationBroadcast(long ms) {
+        Intent i = new Intent("com.suyashsrijan.autoscrollr.STATUS_UPDATE");
+        i.putExtra("status", "duration");
+        i.putExtra("duration_ms", ms);
+        sendBroadcast(i);
     }
 }
