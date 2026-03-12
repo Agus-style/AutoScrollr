@@ -1,57 +1,38 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:7.4.2'
-    }
-}
+name: Build APK
 
-apply plugin: 'com.android.application'
+on:
+push:
+branches: [ master ]
+workflow_dispatch:
 
-android {
-    compileSdkVersion 34
+jobs:
+build:
+runs-on: ubuntu-latest
 
-    defaultConfig {
-        applicationId "com.suyashsrijan.autoscrollr"
-        minSdkVersion 21
-        targetSdkVersion 34
-        versionCode 4
-        versionName "2.0"
-        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
-    }
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
 
-    buildTypes {
-        release {
-            minifyEnabled false
-        }
-    }
+  - name: Setup Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: '17'
 
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-}
+  - name: Setup Android SDK
+    uses: android-actions/setup-android@v3
 
-repositories {
-    google()
-    mavenCentral()
-}
+  - name: Create Gradle Wrapper
+    run: gradle wrapper --gradle-version=7.5
 
-dependencies {
+  - name: Give Permission
+    run: chmod +x gradlew
 
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
+  - name: Build APK
+    run: ./gradlew assembleDebug
 
-    implementation 'com.android.support:appcompat-v7:27.1.1'
-    implementation 'com.android.support:support-v4:27.1.1'
-    implementation 'com.android.support:cardview-v7:27.1.1'
-
-    testImplementation 'junit:junit:4.12'
-    androidTestImplementation 'com.android.support.test:runner:1.0.2'
-    androidTestImplementation 'com.android.support.test.espresso:espresso-core:3.0.2'
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
-}
+  - name: Upload APK
+    uses: actions/upload-artifact@v4
+    with:
+      name: app-debug
+      path: build/outputs/
