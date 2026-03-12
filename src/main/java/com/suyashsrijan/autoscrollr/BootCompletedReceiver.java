@@ -12,11 +12,23 @@ public class BootCompletedReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        boolean autoStartOnBoot = PreferenceManager.getDefaultSharedPreferences(context).getBoolean("autoStartOnBoot", false);
-        Log.i(TAG, "Received BOOT_COMPLETED intent, autoStartOnBoot=" + Boolean.toString(autoStartOnBoot));
+        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
+
+        boolean autoStartOnBoot = PreferenceManager
+            .getDefaultSharedPreferences(context)
+            .getBoolean("autoStartOnBoot", false);
+
+        Log.i(TAG, "Received BOOT_COMPLETED intent, autoStartOnBoot="
+            + Boolean.toString(autoStartOnBoot));
+
         if (autoStartOnBoot) {
-            Intent startServiceIntent = new Intent(context, ScrollrService.class);
-            context.startService(startServiceIntent);
+            // Accessibility Service tidak bisa di-start manual
+            // Buka MainActivity sebagai reminder
+            Log.i(TAG, "autoStartOnBoot=true - opening MainActivity");
+            Intent mainIntent = new Intent(context, MainActivity.class);
+            mainIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            mainIntent.putExtra("from_boot", true);
+            context.startActivity(mainIntent);
         }
     }
 }
