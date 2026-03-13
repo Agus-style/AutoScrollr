@@ -90,17 +90,22 @@ public class ScrollrService extends AccessibilityService {
         int type = event.getEventType();
 
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            handler.postDelayed(() -> checkAndSkipLiveOrAd(), 500);
+            // Video baru / halaman baru — cek live/iklan
+            handler.postDelayed(() -> checkAndSkipLiveOrAd(), 600);
         }
 
-        // Cek live/iklan juga saat konten berubah (lebih reliable)
         if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
-            handler.removeCallbacksAndMessages(null); // debounce
-            handler.postDelayed(() -> {
+            // Debounce: cancel hanya pollDurationRunnable, JANGAN cancel timerRunnable
+            if (pollDurationRunnable != null)
+                handler.removeCallbacks(pollDurationRunnable);
+
+            pollDurationRunnable = () -> {
                 checkAndSkipLiveOrAd();
                 if (isSmartDurationEnabled()) tryDetectAndReschedule();
-            }, 800);
+            };
+            handler.postDelayed(pollDurationRunnable, 1000);
         }
+    }
     }
 
     /**
@@ -116,20 +121,31 @@ public class ScrollrService extends AccessibilityService {
 
         try {
             long[] info = findRangeCurrentAndMax(root);
-            // info[0] = current (ms), info[1] = max/total (ms)
             if (info != null && info[1] > 2000) {
                 long remaining = info[1] - info[0];
-                if (remaining < 500) remaining = 500; // buffer minimal
-                if (remaining > 600000) { root.recycle(); return; } // abaikan jika > 10 menit
+                if (remaining < 800) remaining = 800;
+                if (remaining > 600000) { root.recycle(); return; }
 
-                // Hanya reschedule jika durasi yang terdeteksi berbeda signifikan
-                // dari countdown sekarang (selisih > 2 detik)
-                if (Math.abs(remaining - countdownRemaining) > 2000) {
-                    Log.i(TAG, "Reschedule: remaining=" + remaining + "ms");
-                    cancelAll();
+                // Jika timer belum jalan (timerRunnable null) → schedule baru
+                if (timerRunnable == null) {
+                    Log.i(TAG, "Smart duration (fresh): " + remaining + "ms");
                     countdownRemaining = remaining;
                     sendDurationBroadcast(countdownRemaining);
                     startCountdown();
+                    scheduleScroll(remaining);
+                }
+                // Jika timer sudah jalan tapi selisih > 3 detik → koreksi
+                else if (Math.abs(remaining - countdownRemaining) > 3000) {
+                    Log.i(TAG, "Smart duration (correct): " + remaining + "ms");
+                    // Cancel countdown lama, start yang baru — tapi JANGAN cancel timerRunnable
+                    if (countdownRunnable != null) handler.removeCallbacks(countdownRunnable);
+                    countdownRunnable = null;
+                    countdownRemaining = remaining;
+                    sendDurationBroadcast(countdownRemaining);
+                    startCountdown();
+                    // Reschedule timerRunnable juga
+                    if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
+                    timerRunnable = null;
                     scheduleScroll(remaining);
                 }
             }
