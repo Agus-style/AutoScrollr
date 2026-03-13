@@ -22,9 +22,6 @@ import android.support.v4.app.NotificationCompat;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
-import android.media.session.MediaSessionManager;
-import android.media.session.MediaController;
-import android.media.session.PlaybackState;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -193,11 +190,26 @@ public class ScrollrService extends AccessibilityService {
             return;
         }
 
-        long duration = getScrollSpeedFromPrefs();
+        long duration = getRandomDuration();
         countdownRemaining = duration;
         sendDurationBroadcast(countdownRemaining);
         startCountdown();
         scheduleScroll(duration);
+        Log.i(TAG, "Next scroll in: " + duration + "ms");
+    }
+
+    /**
+     * Ambil durasi random antara min dan max dari settings.
+     * Kalau mode fixed, pakai scrollSpeed biasa.
+     */
+    private long getRandomDuration() {
+        if (!isRandomDurationEnabled()) {
+            return getScrollSpeedFromPrefs();
+        }
+        long min = getMinScrollSpeed();
+        long max = getMaxScrollSpeed();
+        if (min >= max) return min;
+        return min + (long)(random.nextDouble() * (max - min));
     }
 
     private void startCountdown() {
@@ -601,124 +613,11 @@ public class ScrollrService extends AccessibilityService {
         } catch (Exception e) { return true; }
     }
 
-    // ===================== SMART DURATION =====================
+    // ===================== SMART DURATION (disabled - TikTok tidak expose durasi) =====================
 
-    /**
-     * Coba deteksi durasi via 2 cara:
-     * 1. Media Session API (dapat posisi & durasi dari media player TikTok)
-     * 2. Parse teks timestamp dari UI ("0:15 / 0:30" atau "0:30")
-     * Koreksi timer hanya jika selisih > 3 detik dan countdown masih > 3 detik.
-     */
     private void trySmartDurationCorrect() {
-        if (!isRunning || isPaused || isScrolling) return;
-        if (countdownRemaining < 3000) return;
-
-        long remaining = 0;
-
-        // Cara 1: Media Session API
-        remaining = getRemainingFromMediaSession();
-        if (remaining > 0) Log.i(TAG, "MediaSession remaining: " + remaining + "ms");
-
-        // Cara 2: Parse teks UI (fallback)
-        if (remaining <= 0) {
-            remaining = getRemainingFromUIText();
-            if (remaining > 0) Log.i(TAG, "UIText remaining: " + remaining + "ms");
-        }
-
-        if (remaining <= 0 || remaining > 600000) return;
-
-        if (Math.abs(remaining - countdownRemaining) > 3000) {
-            Log.i(TAG, "Smart koreksi: " + remaining + "ms");
-            if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
-            if (countdownRunnable != null) handler.removeCallbacks(countdownRunnable);
-            timerRunnable = null;
-            countdownRunnable = null;
-            countdownRemaining = remaining;
-            sendDurationBroadcast(countdownRemaining);
-            startCountdown();
-            scheduleScroll(remaining);
-        }
-    }
-
-    /**
-     * Cara 1: Baca durasi & posisi dari MediaSessionManager.
-     * Accessibility Service punya akses ke active media sessions.
-     * Return sisa waktu dalam ms, atau 0 jika gagal.
-     */
-    private long getRemainingFromMediaSession() {
-        try {
-            MediaSessionManager msm = (MediaSessionManager)
-                getSystemService(MEDIA_SESSION_SERVICE);
-            if (msm == null) return 0;
-
-            List<MediaController> controllers =
-                msm.getActiveSessions(new android.content.ComponentName(
-                    this, ScrollrService.class));
-
-            for (MediaController controller : controllers) {
-                String pkg = controller.getPackageName();
-                if (!TIKTOK_PACKAGE.equals(pkg) && !TIKTOK_PACKAGE_ALT.equals(pkg)) continue;
-
-                PlaybackState state = controller.getPlaybackState();
-                android.media.MediaMetadata meta = controller.getMetadata();
-
-                if (state == null || meta == null) continue;
-
-                long duration = meta.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
-                long position = state.getPosition();
-
-                if (duration > 0 && position >= 0 && duration > position) {
-                    long remaining = duration - position;
-                    if (remaining >= 1000 && remaining <= 600000) return remaining;
-                }
-            }
-        } catch (Exception e) { Log.e(TAG, "mediaSession: " + e.getMessage()); }
-        return 0;
-    }
-
-    /**
-     * Cara 2: Scan teks UI untuk format timestamp.
-     * TikTok kadang render "0:15 / 0:30" atau "0:30" di layar.
-     * Return sisa waktu dalam ms, atau 0 jika tidak ketemu.
-     */
-    private long getRemainingFromUIText() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return 0;
-        try {
-            List<String> texts = new ArrayList<>();
-            collectTexts(root, texts);
-            for (String text : texts) {
-                long parsed = parseDurationText(text.trim());
-                if (parsed > 0) { root.recycle(); return parsed; }
-            }
-        } catch (Exception e) { Log.e(TAG, "uiText: " + e.getMessage()); }
-        root.recycle();
-        return 0;
-    }
-
-    /**
-     * Parse teks "0:15 / 0:30" → ambil sisa (total - current).
-     * Atau "0:30" saja → ambil langsung sebagai durasi.
-     */
-    private long parseDurationText(String text) {
-        if (text == null || text.isEmpty()) return 0;
-        // Format: "M:SS / M:SS"
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-            "(\\d{1,2}):(\\d{2})\\s*/\\s*(\\d{1,2}):(\\d{2})").matcher(text);
-        if (m.find()) {
-            long curMs  = (Long.parseLong(m.group(1)) * 60 + Long.parseLong(m.group(2))) * 1000;
-            long totMs  = (Long.parseLong(m.group(3)) * 60 + Long.parseLong(m.group(4))) * 1000;
-            long rem = totMs - curMs;
-            if (rem >= 1000 && rem <= 600000) return rem;
-        }
-        // Format tunggal: "M:SS"
-        java.util.regex.Matcher m2 = java.util.regex.Pattern.compile(
-            "^(\\d{1,2}):(\\d{2})$").matcher(text);
-        if (m2.find()) {
-            long ms = (Long.parseLong(m2.group(1)) * 60 + Long.parseLong(m2.group(2))) * 1000;
-            if (ms >= 1000 && ms <= 600000) return ms;
-        }
-        return 0;
+        // TikTok tidak expose durasi video ke Accessibility/MediaSession/disk
+        // Pakai random duration dari getRandomDuration() di startTimer()
     }
 
     // ===================== SWIPE =====================
@@ -754,6 +653,16 @@ public class ScrollrService extends AccessibilityService {
         return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipLive", true); }
     private boolean isSkipAdsEnabled() {
         return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipAds", true); }
+    private boolean isRandomDurationEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("randomDuration", false); }
+    private long getMinScrollSpeed() {
+        try { return Long.parseLong(PreferenceManager
+            .getDefaultSharedPreferences(this).getString("minScrollSpeed", "5000"));
+        } catch (Exception e) { return 5000L; } }
+    private long getMaxScrollSpeed() {
+        try { return Long.parseLong(PreferenceManager
+            .getDefaultSharedPreferences(this).getString("maxScrollSpeed", "60000"));
+        } catch (Exception e) { return 60000L; } }
     private boolean isAutoLikeEnabled() {
         return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoLike", false); }
     private boolean isAutoFollowEnabled() {
