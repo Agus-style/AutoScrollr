@@ -30,18 +30,16 @@ public class ScrollrService extends AccessibilityService {
     private static final String TIKTOK_PACKAGE = "com.zhiliaoapp.musically";
     private static final String TIKTOK_PACKAGE_ALT = "com.ss.android.ugc.trill";
     private static final long SCROLL_ANIMATION_DURATION = 300;
-    private static final long CHECK_INTERVAL = 800;
+    private static final long CHECK_INTERVAL = 500;
 
     public static ScrollrService instance;
 
     private Handler handler = new Handler(Looper.getMainLooper());
-    private Runnable checkRunnable;
-    private Runnable timerRunnable;
+    private Runnable checkProgressRunnable;
     private boolean isRunning = false;
     private boolean isPaused = false;
     private boolean isScrolling = false;
     private long lastScrollTime = 0;
-    private long currentTimerDuration = -1;
 
     private BroadcastReceiver controlReceiver = new BroadcastReceiver() {
         @Override
@@ -75,11 +73,8 @@ public class ScrollrService extends AccessibilityService {
             ? event.getPackageName().toString() : "";
         if (!pkg.equals(TIKTOK_PACKAGE) && !pkg.equals(TIKTOK_PACKAGE_ALT)) return;
 
-        // Video baru dibuka → reset timer
         if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (!isScrolling) {
-                handler.postDelayed(() -> resetTimerForNewVideo(), 600);
-            }
+            checkAndSkipLiveOrAd();
         }
     }
 
@@ -94,28 +89,26 @@ public class ScrollrService extends AccessibilityService {
         try { unregisterReceiver(controlReceiver); } catch (Exception ignored) {}
     }
 
-    // ===================== KONTROL =====================
-
     public void startAutoScroll() {
         if (isRunning) return;
         isRunning = true;
         isPaused = false;
-        Log.i(TAG, "Starting");
+        Log.i(TAG, "Starting - monitor progress");
         sendStatusBroadcast("started");
-        resetTimerForNewVideo();
+        startProgressMonitor();
     }
 
     public void stopAutoScroll() {
         isRunning = false;
         isPaused = false;
-        cancelAllCallbacks();
+        stopProgressMonitor();
         Log.i(TAG, "Stopped");
         sendStatusBroadcast("stopped");
     }
 
     public void pauseAutoScroll() {
         isPaused = true;
-        cancelAllCallbacks();
+        stopProgressMonitor();
         sendStatusBroadcast("paused");
     }
 
@@ -123,137 +116,232 @@ public class ScrollrService extends AccessibilityService {
         if (!isRunning) return;
         isPaused = false;
         sendStatusBroadcast("started");
-        resetTimerForNewVideo();
+        startProgressMonitor();
     }
 
     public boolean isRunning() { return isRunning; }
     public boolean isPaused()  { return isPaused; }
 
-    private void cancelAllCallbacks() {
-        if (checkRunnable != null) handler.removeCallbacks(checkRunnable);
-        if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
-        checkRunnable = null;
-        timerRunnable = null;
-    }
+    // ===================== MONITOR PROGRESS =====================
 
-    // ===================== INTI UTAMA =====================
-
-    private void resetTimerForNewVideo() {
-        if (!isRunning || isPaused) return;
-        cancelAllCallbacks();
-
-        // Cek LIVE dulu
-        if (isSkipLiveEnabled() && isStrictlyLive()) {
-            Log.i(TAG, "LIVE badge detected - skipping");
-            sendStatusBroadcast("live_skipped");
-            doScroll();
-            return;
-        }
-
-        // Coba baca timestamp dari layar
-        long[] times = readTimestamp();
-
-        if (times != null && times[1] > 0) {
-            // Berhasil baca timestamp!
-            long currentSec = times[0];
-            long totalSec = times[1];
-            long remainingMs = (totalSec - currentSec) * 1000L;
-
-            // Minimal 1 detik, maksimal 3 menit
-            remainingMs = Math.max(1000, Math.min(remainingMs, 180000));
-
-            Log.i(TAG, "Timestamp: " + currentSec + "s / " + totalSec
-                + "s → scroll in " + remainingMs + "ms");
-            sendDurationBroadcast(totalSec * 1000L);
-
-            scheduleScrollAfter(remainingMs);
-
-        } else {
-            // Tidak bisa baca timestamp → pakai timer default
-            long defaultMs = getDefaultDurationFromPrefs();
-            Log.i(TAG, "No timestamp → timer " + defaultMs + "ms");
-            sendDurationBroadcast(defaultMs);
-            scheduleScrollAfter(defaultMs);
-
-            // Sambil nunggu, terus coba deteksi timestamp setiap CHECK_INTERVAL
-            startTimestampChecker();
-        }
-    }
-
-    private void scheduleScrollAfter(long delayMs) {
-        if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
-        timerRunnable = () -> {
-            if (!isRunning || isPaused || isScrolling) return;
-            if (System.currentTimeMillis() - lastScrollTime < 1500) return;
-
-            Log.i(TAG, "Timer done → scrolling!");
-            isScrolling = true;
-            lastScrollTime = System.currentTimeMillis();
-            sendStatusBroadcast("scrolled");
-
-            long extra = getExtraDelayFromPrefs();
-            handler.postDelayed(() -> {
-                doScroll();
-                isScrolling = false;
-                // Tunggu video baru load lalu reset timer
-                handler.postDelayed(() -> resetTimerForNewVideo(), 1000);
-            }, extra);
-        };
-        handler.postDelayed(timerRunnable, delayMs);
-    }
-
-    // Cek timestamp setiap interval — kalau ketemu, cancel timer lama & jadwalkan ulang
-    private void startTimestampChecker() {
-        if (checkRunnable != null) handler.removeCallbacks(checkRunnable);
-        checkRunnable = new Runnable() {
+    private void startProgressMonitor() {
+        stopProgressMonitor();
+        checkProgressRunnable = new Runnable() {
             @Override
             public void run() {
-                if (!isRunning || isPaused || isScrolling) return;
+                if (!isRunning || isPaused) return;
 
-                long[] times = readTimestamp();
-                if (times != null && times[1] > 0) {
-                    long remainingMs = (times[1] - times[0]) * 1000L;
-                    remainingMs = Math.max(1000, Math.min(remainingMs, 180000));
-                    Log.i(TAG, "Timestamp found by checker: " + times[0]
-                        + "s / " + times[1] + "s");
-                    sendDurationBroadcast(times[1] * 1000L);
-
-                    // Cancel timer lama, jadwalkan dengan sisa durasi
-                    if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
-                    scheduleScrollAfter(remainingMs);
-                    // Stop checker
-                    checkRunnable = null;
+                // Cek LIVE dan iklan
+                if (checkAndSkipLiveOrAd()) {
+                    handler.postDelayed(checkProgressRunnable, 2000);
                     return;
                 }
 
-                handler.postDelayed(this, CHECK_INTERVAL);
+                // Coba baca progress dari SeekBar
+                float[] progress = getVideoProgress();
+
+                if (progress != null && progress[1] > 0) {
+                    float current = progress[0];
+                    float max = progress[1];
+                    float percent = (current / max) * 100f;
+
+                    long durationMs = max <= 600 ? (long)(max * 1000) : (long) max;
+                    long remainingMs = max <= 600
+                        ? (long)((max - current) * 1000)
+                        : (long)(max - current);
+
+                    sendDurationBroadcast(durationMs);
+                    Log.d(TAG, "Progress: " + String.format("%.1f", percent)
+                        + "% remaining: " + remainingMs + "ms");
+
+                    // Scroll kalau sisa <= 800ms atau progress >= 99%
+                    if ((percent >= 99f || remainingMs <= 800) && !isScrolling
+                        && System.currentTimeMillis() - lastScrollTime > 2000) {
+                        triggerScroll();
+                        return;
+                    }
+
+                    // Cek lebih cepat kalau hampir selesai
+                    long nextCheck = remainingMs <= 2000 ? 200 : CHECK_INTERVAL;
+                    handler.postDelayed(checkProgressRunnable, nextCheck);
+
+                } else {
+                    // SeekBar tidak terdeteksi → coba timestamp teks
+                    long[] times = readTimestamp();
+                    if (times != null && times[1] > 0) {
+                        long remainingSec = times[1] - times[0];
+                        long remainingMs = remainingSec * 1000L;
+                        sendDurationBroadcast(times[1] * 1000L);
+                        Log.d(TAG, "Timestamp: " + times[0] + "s / "
+                            + times[1] + "s remaining: " + remainingSec + "s");
+
+                        if (remainingSec <= 1 && !isScrolling
+                            && System.currentTimeMillis() - lastScrollTime > 2000) {
+                            triggerScroll();
+                            return;
+                        }
+
+                        long nextCheck = remainingSec <= 3 ? 300 : CHECK_INTERVAL;
+                        handler.postDelayed(checkProgressRunnable, nextCheck);
+
+                    } else {
+                        // Fallback timer default
+                        long fallback = getDefaultDurationFromPrefs();
+                        if (!isScrolling
+                            && System.currentTimeMillis() - lastScrollTime >= fallback) {
+                            Log.w(TAG, "Fallback timer triggered");
+                            triggerScroll();
+                            return;
+                        }
+                        handler.postDelayed(checkProgressRunnable, CHECK_INTERVAL);
+                    }
+                }
             }
         };
-        handler.postDelayed(checkRunnable, CHECK_INTERVAL);
+        handler.post(checkProgressRunnable);
     }
 
-    // ===================== BACA TIMESTAMP =====================
-    // Baca teks "0:23 / 1:00" atau "23 / 60" dari layar
+    private void stopProgressMonitor() {
+        if (checkProgressRunnable != null) {
+            handler.removeCallbacks(checkProgressRunnable);
+            checkProgressRunnable = null;
+        }
+    }
+
+    private void triggerScroll() {
+        isScrolling = true;
+        lastScrollTime = System.currentTimeMillis();
+        sendStatusBroadcast("scrolled");
+        long extra = getExtraDelayFromPrefs();
+        handler.postDelayed(() -> {
+            doSwipeUp();
+            isScrolling = false;
+            handler.postDelayed(checkProgressRunnable, 1200);
+        }, extra);
+    }
+
+    // ===================== LIVE & IKLAN CHECK =====================
+
+    private boolean checkAndSkipLiveOrAd() {
+        if (!isSkipLiveEnabled()) return false;
+
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return false;
+
+        try {
+            List<String> allTexts = new ArrayList<>();
+            collectTexts(root, allTexts);
+
+            for (String text : allTexts) {
+                String t = text.trim();
+
+                // Deteksi LIVE badge — hanya teks persis "LIVE"
+                // bukan "Go LIVE", "Watch LIVE", "is live", "LIVE followers" dll
+                if (t.equals("LIVE")) {
+                    Log.i(TAG, "LIVE badge detected - skipping");
+                    sendStatusBroadcast("live_skipped");
+                    root.recycle();
+                    doSwipeUp();
+                    return true;
+                }
+
+                // Deteksi iklan — teks yang biasa muncul di iklan TikTok
+                if (t.equals("Sponsored") || t.equals("Ad")
+                    || t.equals("Iklan") || t.equals("Berbayar")
+                    || t.equals("Promoted")) {
+                    Log.i(TAG, "Ad detected - skipping");
+                    sendStatusBroadcast("ad_skipped");
+                    root.recycle();
+                    doSwipeUp();
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "checkLiveAd error: " + e.getMessage());
+        }
+
+        root.recycle();
+        return false;
+    }
+
+    // ===================== BACA PROGRESS SEEKBAR =====================
+
+    private float[] getVideoProgress() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return null;
+        try {
+            String[] ids = {
+                TIKTOK_PACKAGE_ALT + ":id/progress_bar",
+                TIKTOK_PACKAGE_ALT + ":id/video_progress",
+                TIKTOK_PACKAGE_ALT + ":id/seek_bar",
+                TIKTOK_PACKAGE_ALT + ":id/player_progress",
+                TIKTOK_PACKAGE_ALT + ":id/tt_video_progress",
+                TIKTOK_PACKAGE_ALT + ":id/slide_seekbar",
+                TIKTOK_PACKAGE_ALT + ":id/video_controller_seekbar",
+                TIKTOK_PACKAGE + ":id/progress_bar",
+                TIKTOK_PACKAGE + ":id/video_progress",
+                TIKTOK_PACKAGE + ":id/seek_bar",
+                TIKTOK_PACKAGE + ":id/player_progress",
+            };
+            for (String resId : ids) {
+                List<AccessibilityNodeInfo> bars =
+                    root.findAccessibilityNodeInfosByViewId(resId);
+                if (bars != null && !bars.isEmpty()) {
+                    for (AccessibilityNodeInfo bar : bars) {
+                        if (bar.getRangeInfo() != null) {
+                            float cur = bar.getRangeInfo().getCurrent();
+                            float max = bar.getRangeInfo().getMax();
+                            if (max > 0) {
+                                root.recycle();
+                                return new float[]{cur, max};
+                            }
+                        }
+                    }
+                }
+            }
+            // Scan semua node
+            float[] result = scanNodes(root);
+            if (result != null) { root.recycle(); return result; }
+        } catch (Exception e) {
+            Log.e(TAG, "getProgress error: " + e.getMessage());
+        }
+        root.recycle();
+        return null;
+    }
+
+    private float[] scanNodes(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        if (node.getRangeInfo() != null) {
+            float cur = node.getRangeInfo().getCurrent();
+            float max = node.getRangeInfo().getMax();
+            if (max > 0 && cur >= 0) return new float[]{cur, max};
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            float[] r = scanNodes(child);
+            if (child != null) child.recycle();
+            if (r != null) return r;
+        }
+        return null;
+    }
+
+    // ===================== BACA TIMESTAMP TEKS =====================
 
     private long[] readTimestamp() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return null;
-
         List<String> texts = new ArrayList<>();
         collectTexts(root, texts);
         root.recycle();
 
         for (String text : texts) {
             text = text.trim();
-
-            // Format: "0:23 / 1:00" atau "0:23/1:00"
             if (text.contains("/")) {
                 String[] parts = text.split("/");
                 if (parts.length == 2) {
                     long cur = parseTime(parts[0].trim());
                     long tot = parseTime(parts[1].trim());
                     if (cur >= 0 && tot > 0 && tot <= 600) {
-                        Log.d(TAG, "Timestamp: " + text);
                         return new long[]{cur, tot};
                     }
                 }
@@ -277,51 +365,16 @@ public class ScrollrService extends AccessibilityService {
         try {
             if (s.contains(":")) {
                 String[] p = s.split(":");
-                return Long.parseLong(p[0].trim()) * 60 + Long.parseLong(p[1].trim());
+                return Long.parseLong(p[0].trim()) * 60
+                    + Long.parseLong(p[1].trim());
             }
             return Long.parseLong(s);
         } catch (Exception e) { return -1; }
     }
 
-    // ===================== LIVE CHECK (STRICT) =====================
-    // Hanya skip kalau ada badge LIVE merah — bukan profil live!
+    // ===================== SWIPE =====================
 
-    private boolean isStrictlyLive() {
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return false;
-        try {
-            // Cari teks LIVE yang pendek (badge) bukan deskripsi panjang
-            List<AccessibilityNodeInfo> nodes =
-                root.findAccessibilityNodeInfosByText("LIVE");
-            if (nodes != null) {
-                for (AccessibilityNodeInfo node : nodes) {
-                    CharSequence text = node.getText();
-                    CharSequence desc = node.getContentDescription();
-                    // Badge LIVE biasanya teks pendek persis "LIVE"
-                    // Bukan "Go LIVE", "Watch LIVE", "is live" dll
-                    if (text != null && text.toString().trim().equals("LIVE")) {
-                        // Pastikan ini bukan tombol/profil
-                        // Badge LIVE tidak bisa diklik seperti profil
-                        String className = node.getClassName() != null
-                            ? node.getClassName().toString() : "";
-                        if (!className.contains("Button")
-                            && !className.contains("Image")) {
-                            root.recycle();
-                            return true;
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "isLive error: " + e.getMessage());
-        }
-        root.recycle();
-        return false;
-    }
-
-    // ===================== SCROLL =====================
-
-    private void doScroll() {
+    private void doSwipeUp() {
         int w = getResources().getDisplayMetrics().widthPixels;
         int h = getResources().getDisplayMetrics().heightPixels;
         Path path = new Path();
@@ -332,7 +385,6 @@ public class ScrollrService extends AccessibilityService {
                 path, 0, SCROLL_ANIMATION_DURATION))
             .build();
         dispatchGesture(gesture, null, null);
-        Log.i(TAG, "Swipe performed");
     }
 
     // ===================== PREFERENCES =====================
@@ -373,7 +425,7 @@ public class ScrollrService extends AccessibilityService {
         Notification n = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("TikTok AutoScrollr")
             .setStyle(new NotificationCompat.BigTextStyle()
-                .bigText("Auto scroll aktif • Skip LIVE otomatis"))
+                .bigText("Auto scroll aktif • Skip LIVE & iklan otomatis"))
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(pi)
