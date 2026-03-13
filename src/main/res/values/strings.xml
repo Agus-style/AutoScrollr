@@ -8,6 +8,18 @@
     <string name="autoscrollr_inactive_status_text">🔴 Tidak aktif</string>
     <string name="autoscrollr_disabled_status_text">⚠️ Aktifkan Accessibility dulu</string>
 
+    <!-- String dari layout lama yang masih dipakai -->
+    <string name="about_screen_app_title">TikTok AutoScrollr</string>
+    <string name="version_text">Versi</string>
+    <string name="version_number">2.0</string>
+    <string name="about_app_made_with_love_text">Dibuat berdasarkan AutoScrollr by theblixguy</string>
+    <string name="autoscrollr_intro_text">Auto scroll TikTok otomatis tanpa ROOT. Ikuti durasi video dan skip LIVE otomatis.</string>
+    <string name="autoscrollr_intro_switch_title">Aktifkan TikTok AutoScrollr</string>
+    <string name="autoscrollr_intro_title">TikTok AutoScrollr</string>
+    <string name="settings_menu_text">Pengaturan</string>
+    <string name="donate_menu_text">Donasi</string>
+    <string name="about_menu_text">Tentang</string>
+
     <!-- Array durasi default video -->
     <string-array name="duration_entries">
         <item>5 detik</item>
