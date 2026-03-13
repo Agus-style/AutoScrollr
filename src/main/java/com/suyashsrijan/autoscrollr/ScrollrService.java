@@ -22,6 +22,9 @@ import android.support.v4.app.NotificationCompat;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.media.session.MediaSessionManager;
+import android.media.session.MediaController;
+import android.media.session.PlaybackState;
 
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -601,55 +604,121 @@ public class ScrollrService extends AccessibilityService {
     // ===================== SMART DURATION =====================
 
     /**
-     * Dipanggil dari pollDurationRunnable saat UI TikTok update.
-     * Baca posisi & total dari SeekBar, koreksi timer jika selisih > 3 detik.
-     * TIDAK cancel timerRunnable yang sudah jalan kecuali memang perlu koreksi.
+     * Coba deteksi durasi via 2 cara:
+     * 1. Media Session API (dapat posisi & durasi dari media player TikTok)
+     * 2. Parse teks timestamp dari UI ("0:15 / 0:30" atau "0:30")
+     * Koreksi timer hanya jika selisih > 3 detik dan countdown masih > 3 detik.
      */
     private void trySmartDurationCorrect() {
         if (!isRunning || isPaused || isScrolling) return;
-        if (countdownRemaining < 3000) return; // sudah dekat scroll, jangan ganggu
+        if (countdownRemaining < 3000) return;
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return;
-        try {
-            long[] info = findRangeCurrentAndMax(root);
-            if (info != null && info[1] > 2000) {
-                long remaining = info[1] - info[0];
-                if (remaining < 1000 || remaining > 600000) { root.recycle(); return; }
-                if (Math.abs(remaining - countdownRemaining) > 3000) {
-                    Log.i(TAG, "Smart duration koreksi: " + remaining + "ms");
-                    if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
-                    if (countdownRunnable != null) handler.removeCallbacks(countdownRunnable);
-                    timerRunnable = null; countdownRunnable = null;
-                    countdownRemaining = remaining;
-                    sendDurationBroadcast(countdownRemaining);
-                    startCountdown();
-                    scheduleScroll(remaining);
-                }
-            }
-        } catch (Exception e) { Log.e(TAG, "smartDuration: " + e.getMessage()); }
-        root.recycle();
+        long remaining = 0;
+
+        // Cara 1: Media Session API
+        remaining = getRemainingFromMediaSession();
+        if (remaining > 0) Log.i(TAG, "MediaSession remaining: " + remaining + "ms");
+
+        // Cara 2: Parse teks UI (fallback)
+        if (remaining <= 0) {
+            remaining = getRemainingFromUIText();
+            if (remaining > 0) Log.i(TAG, "UIText remaining: " + remaining + "ms");
+        }
+
+        if (remaining <= 0 || remaining > 600000) return;
+
+        if (Math.abs(remaining - countdownRemaining) > 3000) {
+            Log.i(TAG, "Smart koreksi: " + remaining + "ms");
+            if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
+            if (countdownRunnable != null) handler.removeCallbacks(countdownRunnable);
+            timerRunnable = null;
+            countdownRunnable = null;
+            countdownRemaining = remaining;
+            sendDurationBroadcast(countdownRemaining);
+            startCountdown();
+            scheduleScroll(remaining);
+        }
     }
 
-    private long[] findRangeCurrentAndMax(AccessibilityNodeInfo node) {
-        if (node == null) return null;
-        AccessibilityNodeInfo.RangeInfo range = node.getRangeInfo();
-        if (range != null) {
-            float max = range.getMax();
-            float cur = range.getCurrent();
-            if (max > 0 && max <= 600000 && cur >= 0 && cur <= max) {
-                long maxMs = max > 1000 ? (long) max : (long)(max * 1000);
-                long curMs = max > 1000 ? (long) cur : (long)(cur * 1000);
-                if (maxMs >= 2000) return new long[]{curMs, maxMs};
+    /**
+     * Cara 1: Baca durasi & posisi dari MediaSessionManager.
+     * Accessibility Service punya akses ke active media sessions.
+     * Return sisa waktu dalam ms, atau 0 jika gagal.
+     */
+    private long getRemainingFromMediaSession() {
+        try {
+            MediaSessionManager msm = (MediaSessionManager)
+                getSystemService(MEDIA_SESSION_SERVICE);
+            if (msm == null) return 0;
+
+            List<MediaController> controllers =
+                msm.getActiveSessions(new android.content.ComponentName(
+                    this, ScrollrService.class));
+
+            for (MediaController controller : controllers) {
+                String pkg = controller.getPackageName();
+                if (!TIKTOK_PACKAGE.equals(pkg) && !TIKTOK_PACKAGE_ALT.equals(pkg)) continue;
+
+                PlaybackState state = controller.getPlaybackState();
+                android.media.MediaMetadata meta = controller.getMetadata();
+
+                if (state == null || meta == null) continue;
+
+                long duration = meta.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
+                long position = state.getPosition();
+
+                if (duration > 0 && position >= 0 && duration > position) {
+                    long remaining = duration - position;
+                    if (remaining >= 1000 && remaining <= 600000) return remaining;
+                }
             }
+        } catch (Exception e) { Log.e(TAG, "mediaSession: " + e.getMessage()); }
+        return 0;
+    }
+
+    /**
+     * Cara 2: Scan teks UI untuk format timestamp.
+     * TikTok kadang render "0:15 / 0:30" atau "0:30" di layar.
+     * Return sisa waktu dalam ms, atau 0 jika tidak ketemu.
+     */
+    private long getRemainingFromUIText() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return 0;
+        try {
+            List<String> texts = new ArrayList<>();
+            collectTexts(root, texts);
+            for (String text : texts) {
+                long parsed = parseDurationText(text.trim());
+                if (parsed > 0) { root.recycle(); return parsed; }
+            }
+        } catch (Exception e) { Log.e(TAG, "uiText: " + e.getMessage()); }
+        root.recycle();
+        return 0;
+    }
+
+    /**
+     * Parse teks "0:15 / 0:30" → ambil sisa (total - current).
+     * Atau "0:30" saja → ambil langsung sebagai durasi.
+     */
+    private long parseDurationText(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        // Format: "M:SS / M:SS"
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+            "(\\d{1,2}):(\\d{2})\\s*/\\s*(\\d{1,2}):(\\d{2})").matcher(text);
+        if (m.find()) {
+            long curMs  = (Long.parseLong(m.group(1)) * 60 + Long.parseLong(m.group(2))) * 1000;
+            long totMs  = (Long.parseLong(m.group(3)) * 60 + Long.parseLong(m.group(4))) * 1000;
+            long rem = totMs - curMs;
+            if (rem >= 1000 && rem <= 600000) return rem;
         }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            long[] result = findRangeCurrentAndMax(child);
-            if (child != null) child.recycle();
-            if (result != null) return result;
+        // Format tunggal: "M:SS"
+        java.util.regex.Matcher m2 = java.util.regex.Pattern.compile(
+            "^(\\d{1,2}):(\\d{2})$").matcher(text);
+        if (m2.find()) {
+            long ms = (Long.parseLong(m2.group(1)) * 60 + Long.parseLong(m2.group(2))) * 1000;
+            if (ms >= 1000 && ms <= 600000) return ms;
         }
-        return null;
+        return 0;
     }
 
     // ===================== SWIPE =====================
