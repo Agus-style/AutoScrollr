@@ -1,54 +1,153 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <PreferenceCategory android:title="Scroll">
-
+    <PreferenceCategory android:title="⏱ Scroll">
         <ListPreference
-            android:key="defaultVideoDuration"
-            android:title="Durasi Default Video"
-            android:summary="Dipakai kalau durasi tidak terdeteksi"
-            android:entries="@array/duration_entries"
-            android:entryValues="@array/duration_values"
+            android:key="scrollSpeed"
+            android:title="Kecepatan Scroll"
+            android:summary="Durasi nonton per video"
+            android:entries="@array/speed_entries"
+            android:entryValues="@array/speed_values"
             android:defaultValue="15000"/>
-
         <ListPreference
             android:key="extraDelay"
             android:title="Jeda Tambahan"
-            android:summary="Waktu tambahan setelah video selesai"
+            android:summary="Jeda setelah video selesai"
             android:entries="@array/delay_entries"
             android:entryValues="@array/delay_values"
-            android:defaultValue="500"/>
-
+            android:defaultValue="0"/>
+        <ListPreference
+            android:key="swipeSpeed"
+            android:title="Kecepatan Swipe"
+            android:summary="Seberapa cepat animasi swipe"
+            android:entries="@array/swipe_speed_entries"
+            android:entryValues="@array/swipe_speed_values"
+            android:defaultValue="300"/>
+        <SwitchPreference
+            android:key="hapticFeedback"
+            android:title="Haptic Feedback"
+            android:summary="Getar saat scroll otomatis"
+            android:defaultValue="false"/>
     </PreferenceCategory>
 
-    <PreferenceCategory android:title="TikTok">
-
+    <PreferenceCategory android:title="🎵 TikTok">
         <SwitchPreference
             android:key="skipLive"
             android:title="Skip LIVE Otomatis"
             android:summary="Lewati video LIVE secara otomatis"
             android:defaultValue="true"/>
+        <SwitchPreference
+            android:key="skipAds"
+            android:title="Skip Iklan Otomatis"
+            android:summary="Lewati iklan/sponsored secara otomatis"
+            android:defaultValue="true"/>
+    </PreferenceCategory>
 
+    <PreferenceCategory android:title="❤️ Interaksi">
         <SwitchPreference
             android:key="autoLike"
             android:title="Auto Like"
-            android:summary="Like video secara otomatis saat scroll"
+            android:summary="Like video secara otomatis"
             android:defaultValue="false"/>
-
+        <SwitchPreference
+            android:key="autoFollow"
+            android:title="Auto Follow"
+            android:summary="Follow user secara otomatis"
+            android:defaultValue="false"/>
+        <SwitchPreference
+            android:key="autoComment"
+            android:title="Auto Comment"
+            android:summary="Komen otomatis saat scroll"
+            android:defaultValue="false"/>
+        <EditTextPreference
+            android:key="commentList"
+            android:title="Daftar Komentar"
+            android:summary="Pisahkan dengan koma"
+            android:defaultValue="Keren,Bagus,Mantap,Lucu,Keren banget,Wow,Haha,😂,❤️,🔥"/>
+        <SwitchPreference
+            android:key="autoShare"
+            android:title="Auto Share"
+            android:summary="Share video otomatis"
+            android:defaultValue="false"/>
+        <SwitchPreference
+            android:key="autoSave"
+            android:title="Auto Save/Download"
+            android:summary="Download video otomatis"
+            android:defaultValue="false"/>
     </PreferenceCategory>
 
-    <PreferenceCategory android:title="Umum">
+    <PreferenceCategory android:title="🚫 Filter">
+        <EditTextPreference
+            android:key="blacklistWords"
+            android:title="Blacklist Kata"
+            android:summary="Skip video dengan kata ini. Pisahkan koma"
+            android:defaultValue=""/>
+        <EditTextPreference
+            android:key="whitelistWords"
+            android:title="Whitelist Kata"
+            android:summary="Hanya tonton video dengan kata ini. Pisahkan koma"
+            android:defaultValue=""/>
+    </PreferenceCategory>
 
+    <PreferenceCategory android:title="📊 Sesi">
+        <SwitchPreference
+            android:key="limitVideos"
+            android:title="Batasi Jumlah Video"
+            android:summary="Stop otomatis setelah X video"
+            android:defaultValue="false"/>
+        <ListPreference
+            android:key="maxVideos"
+            android:title="Maksimal Video"
+            android:summary="Jumlah video per sesi"
+            android:entries="@array/max_video_entries"
+            android:entryValues="@array/max_video_values"
+            android:defaultValue="50"/>
+        <SwitchPreference
+            android:key="nightMode"
+            android:title="Mode Malam"
+            android:summary="Aktif hanya pada jam tertentu"
+            android:defaultValue="false"/>
+        <EditTextPreference
+            android:key="activeHourStart"
+            android:title="Jam Mulai Aktif"
+            android:summary="Format: 0-23. Default: 8"
+            android:defaultValue="8"/>
+        <EditTextPreference
+            android:key="activeHourEnd"
+            android:title="Jam Selesai Aktif"
+            android:summary="Format: 0-23. Default: 22"
+            android:defaultValue="22"/>
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="🎨 Tampilan">
+        <ListPreference
+            android:key="floatTheme"
+            android:title="Tema Floating Button"
+            android:summary="Pilih warna tema"
+            android:entries="@array/theme_entries"
+            android:entryValues="@array/theme_values"
+            android:defaultValue="dark"/>
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="⚙️ Umum">
         <SwitchPreference
             android:key="autoStartOnBoot"
             android:title="Mulai Saat Booting"
             android:summary="Buka app otomatis setelah HP restart"
             android:defaultValue="false"/>
-
+        <SwitchPreference
+            android:key="showStats"
+            android:title="Tampilkan Statistik"
+            android:summary="Tampilkan jumlah video, like, follow di floating button"
+            android:defaultValue="true"/>
         <Preference
+            android:key="resetStats"
+            android:title="Reset Statistik"
+            android:summary="Reset semua hitungan ke 0"/>
+        <Preference
+            android:key="version"
             android:title="Versi"
             android:summary="TikTok AutoScrollr v2.0"/>
-
     </PreferenceCategory>
 
 </PreferenceScreen>
