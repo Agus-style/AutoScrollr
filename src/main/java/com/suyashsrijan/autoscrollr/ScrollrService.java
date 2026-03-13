@@ -50,6 +50,9 @@ public class ScrollrService extends AccessibilityService {
     private int followCount = 0;
     private int commentCount = 0;
     private Random random = new Random();
+    private Runnable pollDurationRunnable;
+    private long videoDurationMs = 0;   // durasi total video saat ini (ms)
+    private long videoStartTime = 0;    // System.currentTimeMillis() saat video mulai
 
     private BroadcastReceiver controlReceiver = new BroadcastReceiver() {
         @Override
@@ -84,9 +87,87 @@ public class ScrollrService extends AccessibilityService {
             ? event.getPackageName().toString() : "";
         if (!pkg.equals(TIKTOK_PACKAGE) && !pkg.equals(TIKTOK_PACKAGE_ALT)) return;
 
-        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+        int type = event.getEventType();
+
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             handler.postDelayed(() -> checkAndSkipLiveOrAd(), 500);
         }
+
+        // Cek live/iklan juga saat konten berubah (lebih reliable)
+        if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            handler.removeCallbacksAndMessages(null); // debounce
+            handler.postDelayed(() -> {
+                checkAndSkipLiveOrAd();
+                if (isSmartDurationEnabled()) tryDetectAndReschedule();
+            }, 800);
+        }
+    }
+
+    /**
+     * Dipanggil saat konten UI TikTok berubah.
+     * Coba baca RangeInfo SeekBar untuk dapat posisi & total durasi,
+     * lalu reschedule scroll tepat saat video habis.
+     */
+    private void tryDetectAndReschedule() {
+        if (!isRunning || isPaused || isScrolling) return;
+
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return;
+
+        try {
+            long[] info = findRangeCurrentAndMax(root);
+            // info[0] = current (ms), info[1] = max/total (ms)
+            if (info != null && info[1] > 2000) {
+                long remaining = info[1] - info[0];
+                if (remaining < 500) remaining = 500; // buffer minimal
+                if (remaining > 600000) { root.recycle(); return; } // abaikan jika > 10 menit
+
+                // Hanya reschedule jika durasi yang terdeteksi berbeda signifikan
+                // dari countdown sekarang (selisih > 2 detik)
+                if (Math.abs(remaining - countdownRemaining) > 2000) {
+                    Log.i(TAG, "Reschedule: remaining=" + remaining + "ms");
+                    cancelAll();
+                    countdownRemaining = remaining;
+                    sendDurationBroadcast(countdownRemaining);
+                    startCountdown();
+                    scheduleScroll(remaining);
+                }
+            }
+        } catch (Exception e) { Log.e(TAG, "tryDetect: " + e.getMessage()); }
+        root.recycle();
+    }
+
+    /**
+     * Traverse node tree, cari SeekBar/ProgressBar dengan RangeInfo valid.
+     * Return [current_ms, max_ms] atau null jika tidak ketemu.
+     */
+    private long[] findRangeCurrentAndMax(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+        AccessibilityNodeInfo.RangeInfo range = node.getRangeInfo();
+        if (range != null) {
+            float max = range.getMax();
+            float cur = range.getCurrent();
+            if (max > 0 && max <= 600000 && cur >= 0 && cur <= max) {
+                long maxMs, curMs;
+                if (max > 1000) {
+                    // Sudah dalam ms
+                    maxMs = (long) max;
+                    curMs = (long) cur;
+                } else {
+                    // Dalam detik
+                    maxMs = (long)(max * 1000);
+                    curMs = (long)(cur * 1000);
+                }
+                if (maxMs >= 2000) return new long[]{curMs, maxMs};
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            long[] result = findRangeCurrentAndMax(child);
+            if (child != null) child.recycle();
+            if (result != null) return result;
+        }
+        return null;
     }
 
     @Override
@@ -143,8 +224,10 @@ public class ScrollrService extends AccessibilityService {
     private void cancelAll() {
         if (timerRunnable != null) handler.removeCallbacks(timerRunnable);
         if (countdownRunnable != null) handler.removeCallbacks(countdownRunnable);
+        if (pollDurationRunnable != null) handler.removeCallbacks(pollDurationRunnable);
         timerRunnable = null;
         countdownRunnable = null;
+        pollDurationRunnable = null;
     }
 
     private void resetStats() {
@@ -398,9 +481,16 @@ public class ScrollrService extends AccessibilityService {
             List<String> texts = new ArrayList<>();
             collectTexts(root, texts);
             for (String text : texts) {
-                String t = text.trim();
-                if (isSkipLiveEnabled() && t.equals("LIVE")) {
-                    Log.i(TAG, "LIVE - skipping");
+                String t = text.trim().toLowerCase();
+
+                // Deteksi LIVE — contains agar tidak miss "LIVE •" atau "🔴 LIVE"
+                if (isSkipLiveEnabled() && (
+                        t.equals("live") ||
+                        t.contains("sedang live") ||
+                        t.contains("is live") ||
+                        t.startsWith("live ") ||
+                        t.endsWith(" live"))) {
+                    Log.i(TAG, "LIVE detected: [" + text + "] - skipping");
                     sendStatusBroadcast("live_skipped");
                     root.recycle();
                     cancelAll();
@@ -408,11 +498,21 @@ public class ScrollrService extends AccessibilityService {
                     handler.postDelayed(() -> startTimer(), 1500);
                     return true;
                 }
+
+                // Deteksi Iklan — contains agar tidak miss variasi teks
                 if (isSkipAdsEnabled() && (
-                    t.equals("Sponsored") || t.equals("Ad") ||
-                    t.equals("Iklan") || t.equals("Berbayar") ||
-                    t.equals("Promoted") || t.equals("Bersponsor"))) {
-                    Log.i(TAG, "Ad - skipping");
+                        t.equals("iklan") ||
+                        t.equals("ad") ||
+                        t.equals("sponsored") ||
+                        t.equals("berbayar") ||
+                        t.equals("promoted") ||
+                        t.equals("bersponsor") ||
+                        t.contains("konten berbayar") ||
+                        t.contains("paid partnership") ||
+                        t.contains("sponsored content") ||
+                        t.contains("iklan •") ||
+                        t.contains("• iklan"))) {
+                    Log.i(TAG, "Ad detected: [" + text + "] - skipping");
                     sendStatusBroadcast("ad_skipped");
                     root.recycle();
                     cancelAll();
