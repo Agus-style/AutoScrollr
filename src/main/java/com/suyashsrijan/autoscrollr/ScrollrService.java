@@ -172,11 +172,132 @@ public class ScrollrService extends AccessibilityService {
             return;
         }
 
+        // Coba deteksi durasi video dari UI dulu
+        if (isSmartDurationEnabled()) {
+            long detected = detectVideoDurationMs();
+            if (detected > 0) {
+                Log.i(TAG, "Smart duration detected: " + detected + "ms");
+                countdownRemaining = detected;
+                sendDurationBroadcast(countdownRemaining);
+                startCountdown();
+                scheduleScroll(detected);
+                return;
+            }
+        }
+
+        // Fallback: pakai durasi manual dari settings
         long duration = getScrollSpeedFromPrefs();
         countdownRemaining = duration;
         sendDurationBroadcast(countdownRemaining);
         startCountdown();
         scheduleScroll(duration);
+    }
+
+    /**
+     * Deteksi durasi video dari AccessibilityNodeInfo.
+     * TikTok merender SeekBar/ProgressBar dengan rangeInfo (max = durasi ms atau detik).
+     * Juga coba baca label teks durasi seperti "0:15 / 0:30".
+     * Return durasi dalam ms, atau 0 jika tidak ketemu.
+     */
+    private long detectVideoDurationMs() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return 0;
+        try {
+            // Cara 1: cari ProgressBar/SeekBar dengan RangeInfo
+            long fromRange = findDurationFromRangeInfo(root);
+            if (fromRange > 0) { root.recycle(); return fromRange; }
+
+            // Cara 2: cari teks durasi format "M:SS / M:SS" atau "MM:SS"
+            long fromText = findDurationFromText(root);
+            if (fromText > 0) { root.recycle(); return fromText; }
+
+        } catch (Exception e) { Log.e(TAG, "detectDuration: " + e.getMessage()); }
+        root.recycle();
+        return 0;
+    }
+
+    private long findDurationFromRangeInfo(AccessibilityNodeInfo node) {
+        if (node == null) return 0;
+        AccessibilityNodeInfo.RangeInfo range = node.getRangeInfo();
+        if (range != null) {
+            float max = range.getMax();
+            float current = range.getCurrent();
+            // TikTok SeekBar: max bisa dalam ms (>1000) atau detik (<300)
+            if (max > 0 && max <= 600000) {
+                long remaining;
+                if (max > 1000) {
+                    // Dalam ms
+                    remaining = (long)(max - current);
+                } else {
+                    // Dalam detik
+                    remaining = (long)((max - current) * 1000);
+                }
+                // Minimal 2 detik, maksimal 10 menit
+                if (remaining >= 2000 && remaining <= 600000) {
+                    return remaining;
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            long result = findDurationFromRangeInfo(child);
+            if (child != null) child.recycle();
+            if (result > 0) return result;
+        }
+        return 0;
+    }
+
+    private long findDurationFromText(AccessibilityNodeInfo node) {
+        if (node == null) return 0;
+        CharSequence text = node.getText();
+        if (text != null) {
+            long parsed = parseDurationText(text.toString());
+            if (parsed > 0) return parsed;
+        }
+        CharSequence desc = node.getContentDescription();
+        if (desc != null) {
+            long parsed = parseDurationText(desc.toString());
+            if (parsed > 0) return parsed;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            long result = findDurationFromText(child);
+            if (child != null) child.recycle();
+            if (result > 0) return result;
+        }
+        return 0;
+    }
+
+    /**
+     * Parse teks "0:15 / 0:30" ambil sisa (total - current).
+     * Atau "0:30" saja ambil langsung.
+     */
+    private long parseDurationText(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        // Format: "M:SS / M:SS" atau "MM:SS / MM:SS"
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+            "(\\d{1,2}):(\\d{2})\\s*/\\s*(\\d{1,2}):(\\d{2})");
+        java.util.regex.Matcher m = p.matcher(text);
+        if (m.find()) {
+            int totalMin = Integer.parseInt(m.group(3));
+            int totalSec = Integer.parseInt(m.group(4));
+            int curMin   = Integer.parseInt(m.group(1));
+            int curSec   = Integer.parseInt(m.group(2));
+            long totalMs = (totalMin * 60L + totalSec) * 1000L;
+            long curMs   = (curMin * 60L + curSec) * 1000L;
+            long remaining = totalMs - curMs;
+            if (remaining >= 2000 && remaining <= 600000) return remaining;
+        }
+        // Format tunggal: "M:SS"
+        java.util.regex.Pattern p2 = java.util.regex.Pattern.compile("^(\\d{1,2}):(\\d{2})$");
+        java.util.regex.Matcher m2 = p2.matcher(text.trim());
+        if (m2.find()) {
+            int min = Integer.parseInt(m2.group(1));
+            int sec = Integer.parseInt(m2.group(2));
+            long ms = (min * 60L + sec) * 1000L;
+            if (ms >= 2000 && ms <= 600000) return ms;
+        }
+        return 0;
     }
 
     private void startCountdown() {
@@ -221,12 +342,36 @@ public class ScrollrService extends AccessibilityService {
             videoCount++;
             sendStatsBroadcast();
 
-            // Auto aksi — pakai content-desc yang sudah kita temukan!
-            if (isAutoLikeEnabled()) doAutoLike();
-            if (isAutoFollowEnabled()) doAutoFollow();
-            if (isAutoShareEnabled()) doAutoShare();
-            if (isAutoSaveEnabled()) doAutoSave();
-            if (isAutoCommentEnabled()) handler.postDelayed(() -> doAutoComment(), 400);
+            // Auto aksi — pakai delay bertahap agar tidak bentrok
+            long delay = 0;
+            if (isAutoLikeEnabled()) {
+                long d = delay;
+                handler.postDelayed(() -> doAutoLike(), d);
+                delay += 500;
+            }
+            if (isAutoFollowEnabled()) {
+                long d = delay;
+                handler.postDelayed(() -> doAutoFollow(), d);
+                delay += 500;
+            }
+            // Share & Save TIDAK boleh bersamaan (keduanya buka share sheet)
+            // Prioritaskan Save jika keduanya aktif
+            if (isAutoSaveEnabled()) {
+                long d = delay;
+                handler.postDelayed(() -> doAutoSave(), d);
+                delay += 2500;
+            } else if (isAutoShareEnabled()) {
+                long d = delay;
+                handler.postDelayed(() -> doAutoShare(), d);
+                delay += 2000;
+            }
+            if (isAutoCommentEnabled()) {
+                long d = delay;
+                handler.postDelayed(() -> doAutoComment(), d);
+                delay += 3000;
+            }
+
+            final long totalDelay = delay;
 
             // Scroll setelah semua aksi
             handler.postDelayed(() -> {
@@ -239,7 +384,7 @@ public class ScrollrService extends AccessibilityService {
                     isScrolling = false;
                     handler.postDelayed(() -> startTimer(), 1000);
                 }, getExtraDelayFromPrefs());
-            }, getActionDelay());
+            }, totalDelay + 500);
         };
         handler.postDelayed(timerRunnable, delayMs);
     }
@@ -317,6 +462,41 @@ public class ScrollrService extends AccessibilityService {
         return false;
     }
 
+    // ===================== HELPER: CARI NODE BY TEXT ATAU CONTENT-DESC =====================
+
+    /**
+     * Cari node yang text ATAU content-description-nya mengandung keyword.
+     * excludeKeyword: jika desc/text mengandung ini, skip (contoh: "Mengikuti").
+     */
+    private AccessibilityNodeInfo findNodeByTextOrDesc(
+            AccessibilityNodeInfo node, String keyword, String excludeKeyword) {
+        if (node == null) return null;
+
+        String kw = keyword.toLowerCase();
+        String ex = excludeKeyword != null ? excludeKeyword.toLowerCase() : null;
+
+        CharSequence text = node.getText();
+        CharSequence desc = node.getContentDescription();
+        String textStr = text != null ? text.toString().toLowerCase() : "";
+        String descStr = desc != null ? desc.toString().toLowerCase() : "";
+
+        boolean matches = textStr.contains(kw) || descStr.contains(kw);
+        boolean excluded = ex != null && (textStr.contains(ex) || descStr.contains(ex));
+
+        if (matches && !excluded) return node;
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            AccessibilityNodeInfo result = findNodeByTextOrDesc(child, keyword, excludeKeyword);
+            if (result != null) {
+                if (result != child && child != null) child.recycle();
+                return result;
+            }
+            if (child != null) child.recycle();
+        }
+        return null;
+    }
+
     // ===================== AUTO LIKE =====================
     // content-desc: "Sukai video. X suka"
 
@@ -324,29 +504,16 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            // Cari by content-desc "Sukai video"
-            List<AccessibilityNodeInfo> nodes =
-                root.findAccessibilityNodeInfosByText("Sukai video");
-            if (nodes != null && !nodes.isEmpty()) {
-                for (AccessibilityNodeInfo node : nodes) {
-                    CharSequence desc = node.getContentDescription();
-                    if (desc != null && desc.toString().contains("Sukai video")) {
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                        likeCount++;
-                        sendStatsBroadcast();
-                        Log.i(TAG, "Auto liked! total: " + likeCount);
-                        break;
-                    }
-                }
-            }
-            // Fallback: cari "Suka"
-            if (nodes == null || nodes.isEmpty()) {
-                List<AccessibilityNodeInfo> sukaNodes =
-                    root.findAccessibilityNodeInfosByText("Suka");
-                if (sukaNodes != null && !sukaNodes.isEmpty()) {
-                    sukaNodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            // Cari tombol like — bisa "Sukai video" atau "Like"
+            String[] likeKeywords = {"Sukai video", "Like video", "Suka"};
+            for (String kw : likeKeywords) {
+                AccessibilityNodeInfo node = findNodeByTextOrDesc(root, kw, null);
+                if (node != null) {
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                     likeCount++;
                     sendStatsBroadcast();
+                    Log.i(TAG, "Auto liked! total: " + likeCount);
+                    break;
                 }
             }
         } catch (Exception e) { Log.e(TAG, "autoLike: " + e.getMessage()); }
@@ -360,26 +527,13 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            // Cari tombol "Ikuti" — bukan "Mengikuti"
-            List<AccessibilityNodeInfo> nodes =
-                root.findAccessibilityNodeInfosByText("Ikuti");
-            if (nodes != null) {
-                for (AccessibilityNodeInfo node : nodes) {
-                    CharSequence desc = node.getContentDescription();
-                    String descStr = desc != null ? desc.toString() : "";
-                    CharSequence text = node.getText();
-                    String textStr = text != null ? text.toString() : "";
-
-                    // Pastikan "Ikuti" bukan "Mengikuti"
-                    if ((descStr.startsWith("Ikuti ") || textStr.equals("Ikuti"))
-                        && !descStr.contains("Mengikuti")) {
-                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                        followCount++;
-                        sendStatsBroadcast();
-                        Log.i(TAG, "Auto followed! total: " + followCount);
-                        break;
-                    }
-                }
+            // Cari "Ikuti", exclude "Mengikuti" (sudah diikuti)
+            AccessibilityNodeInfo node = findNodeByTextOrDesc(root, "Ikuti", "Mengikuti");
+            if (node != null) {
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                followCount++;
+                sendStatsBroadcast();
+                Log.i(TAG, "Auto followed! total: " + followCount);
             }
         } catch (Exception e) { Log.e(TAG, "autoFollow: " + e.getMessage()); }
         root.recycle();
@@ -392,12 +546,16 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            List<AccessibilityNodeInfo> nodes =
-                root.findAccessibilityNodeInfosByText("Baca atau tambahkan komentar");
-            if (nodes != null && !nodes.isEmpty()) {
-                nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                handler.postDelayed(() -> typeComment(), 1200);
-                Log.i(TAG, "Comment button tapped");
+            // Cari tombol komentar by text atau content-desc
+            String[] commentKeywords = {"Baca atau tambahkan komentar", "Tambahkan komentar", "Comment"};
+            for (String kw : commentKeywords) {
+                AccessibilityNodeInfo node = findNodeByTextOrDesc(root, kw, null);
+                if (node != null) {
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    handler.postDelayed(() -> typeComment(), 1200);
+                    Log.i(TAG, "Comment button tapped");
+                    break;
+                }
             }
         } catch (Exception e) { Log.e(TAG, "autoComment: " + e.getMessage()); }
         root.recycle();
@@ -496,12 +654,17 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            List<AccessibilityNodeInfo> nodes =
-                root.findAccessibilityNodeInfosByText("Bagikan video");
-            if (nodes != null && !nodes.isEmpty()) {
-                nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                Log.i(TAG, "Auto shared!");
-                handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 1200);
+            // Cari tombol share by text atau content-desc
+            String[] shareKeywords = {"Bagikan video", "Share video", "Bagikan"};
+            for (String kw : shareKeywords) {
+                AccessibilityNodeInfo node = findNodeByTextOrDesc(root, kw, null);
+                if (node != null) {
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    Log.i(TAG, "Auto shared!");
+                    // Tutup share sheet setelah terbuka (jangan save, hanya share)
+                    handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 1500);
+                    break;
+                }
             }
         } catch (Exception e) { Log.e(TAG, "autoShare: " + e.getMessage()); }
         root.recycle();
@@ -513,12 +676,17 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            // Buka share sheet dulu
-            List<AccessibilityNodeInfo> shareNodes =
-                root.findAccessibilityNodeInfosByText("Bagikan video");
-            if (shareNodes != null && !shareNodes.isEmpty()) {
-                shareNodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                handler.postDelayed(() -> tapSaveButton(), 1200);
+            // Buka share sheet dulu via tombol share
+            // Gunakan keyword yang BERBEDA dari autoShare agar tidak konflik
+            // (autoShare dan autoSave tidak boleh aktif bersamaan idealnya)
+            String[] shareKeywords = {"Bagikan video", "Share video", "Bagikan"};
+            for (String kw : shareKeywords) {
+                AccessibilityNodeInfo node = findNodeByTextOrDesc(root, kw, null);
+                if (node != null) {
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    handler.postDelayed(() -> tapSaveButton(), 1500);
+                    break;
+                }
             }
         } catch (Exception e) { Log.e(TAG, "autoSave: " + e.getMessage()); }
         root.recycle();
@@ -528,17 +696,16 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] saveTexts = {"Simpan video", "Save video", "Unduh", "Download"};
-            for (String saveText : saveTexts) {
-                List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByText(saveText);
-                if (nodes != null && !nodes.isEmpty()) {
-                    nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            String[] saveKeywords = {"Simpan video", "Save video", "Unduh", "Download"};
+            for (String kw : saveKeywords) {
+                AccessibilityNodeInfo node = findNodeByTextOrDesc(root, kw, null);
+                if (node != null) {
+                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                     Log.i(TAG, "Auto saved!");
+                    handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 800);
                     break;
                 }
             }
-            handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 600);
         } catch (Exception e) { Log.e(TAG, "tapSave: " + e.getMessage()); }
         root.recycle();
     }
@@ -636,6 +803,8 @@ public class ScrollrService extends AccessibilityService {
         return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipLive", true); }
     private boolean isSkipAdsEnabled() {
         return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipAds", true); }
+    private boolean isSmartDurationEnabled() {
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("smartDuration", true); }
     private boolean isAutoLikeEnabled() {
         return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoLike", false); }
     private boolean isAutoFollowEnabled() {
