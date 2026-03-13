@@ -1,26 +1,118 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TikTok AutoScrollr</string>
-    <string name="accessibility_description">Auto scroll TikTok otomatis: ikuti durasi video, skip LIVE, tanpa ROOT.</string>
+    <string name="accessibility_description">Auto scroll TikTok otomatis tanpa ROOT.</string>
     <string name="title_activity_settings">Pengaturan</string>
     <string name="title_activity_about">Tentang</string>
-    <string name="autoscrollr_active_status_text">🟢 Auto scroll aktif</string>
-    <string name="autoscrollr_inactive_status_text">🔴 Tidak aktif</string>
-    <string name="autoscrollr_disabled_status_text">⚠️ Aktifkan Accessibility dulu</string>
-
-    <!-- String dari layout lama yang masih dipakai -->
     <string name="about_screen_app_title">TikTok AutoScrollr</string>
     <string name="version_text">Versi</string>
     <string name="version_number">2.0</string>
     <string name="about_app_made_with_love_text">Dibuat berdasarkan AutoScrollr by theblixguy</string>
-    <string name="autoscrollr_intro_text">Auto scroll TikTok otomatis tanpa ROOT. Ikuti durasi video dan skip LIVE otomatis.</string>
+    <string name="autoscrollr_intro_text">Auto scroll TikTok otomatis tanpa ROOT.</string>
     <string name="autoscrollr_intro_switch_title">Aktifkan TikTok AutoScrollr</string>
     <string name="autoscrollr_intro_title">TikTok AutoScrollr</string>
     <string name="settings_menu_text">Pengaturan</string>
     <string name="donate_menu_text">Donasi</string>
     <string name="about_menu_text">Tentang</string>
 
-    <!-- Array durasi default video -->
+    <string-array name="speed_entries">
+        <item>Sangat Cepat (5 detik)</item>
+        <item>Cepat (8 detik)</item>
+        <item>Normal (15 detik)</item>
+        <item>Sedang (20 detik)</item>
+        <item>Lambat (30 detik)</item>
+        <item>Sangat Lambat (60 detik)</item>
+        <item>45 detik</item>
+        <item>90 detik</item>
+        <item>2 menit</item>
+        <item>3 menit</item>
+    </string-array>
+    <string-array name="speed_values">
+        <item>5000</item>
+        <item>8000</item>
+        <item>15000</item>
+        <item>20000</item>
+        <item>30000</item>
+        <item>60000</item>
+        <item>45000</item>
+        <item>90000</item>
+        <item>120000</item>
+        <item>180000</item>
+    </string-array>
+
+    <string-array name="delay_entries">
+        <item>Tidak ada</item>
+        <item>0.5 detik</item>
+        <item>1 detik</item>
+        <item>2 detik</item>
+        <item>3 detik</item>
+    </string-array>
+    <string-array name="delay_values">
+        <item>0</item>
+        <item>500</item>
+        <item>1000</item>
+        <item>2000</item>
+        <item>3000</item>
+    </string-array>
+
+    <string-array name="swipe_speed_entries">
+        <item>Sangat Cepat</item>
+        <item>Cepat</item>
+        <item>Normal</item>
+        <item>Lambat</item>
+    </string-array>
+    <string-array name="swipe_speed_values">
+        <item>100</item>
+        <item>200</item>
+        <item>300</item>
+        <item>500</item>
+    </string-array>
+
+    <string-array name="min_duration_entries">
+        <item>5 detik</item>
+        <item>10 detik</item>
+        <item>15 detik</item>
+        <item>30 detik</item>
+    </string-array>
+    <string-array name="min_duration_values">
+        <item>5000</item>
+        <item>10000</item>
+        <item>15000</item>
+        <item>30000</item>
+    </string-array>
+
+    <string-array name="max_video_entries">
+        <item>10 video</item>
+        <item>25 video</item>
+        <item>50 video</item>
+        <item>100 video</item>
+        <item>200 video</item>
+        <item>Tanpa batas</item>
+    </string-array>
+    <string-array name="max_video_values">
+        <item>10</item>
+        <item>25</item>
+        <item>50</item>
+        <item>100</item>
+        <item>200</item>
+        <item>0</item>
+    </string-array>
+
+    <string-array name="theme_entries">
+        <item>Gelap (Default)</item>
+        <item>TikTok Pink</item>
+        <item>Biru</item>
+        <item>Hijau</item>
+        <item>Ungu</item>
+    </string-array>
+    <string-array name="theme_values">
+        <item>dark</item>
+        <item>pink</item>
+        <item>blue</item>
+        <item>green</item>
+        <item>purple</item>
+    </string-array>
+
     <string-array name="duration_entries">
         <item>5 detik</item>
         <item>10 detik</item>
@@ -34,21 +126,5 @@
         <item>15000</item>
         <item>30000</item>
         <item>60000</item>
-    </string-array>
-
-    <!-- Array jeda tambahan -->
-    <string-array name="delay_entries">
-        <item>Tidak ada</item>
-        <item>0.5 detik (default)</item>
-        <item>1 detik</item>
-        <item>2 detik</item>
-        <item>3 detik</item>
-    </string-array>
-    <string-array name="delay_values">
-        <item>0</item>
-        <item>500</item>
-        <item>1000</item>
-        <item>2000</item>
-        <item>3000</item>
     </string-array>
 </resources>
