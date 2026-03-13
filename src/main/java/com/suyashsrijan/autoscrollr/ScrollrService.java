@@ -148,10 +148,7 @@ public class ScrollrService extends AccessibilityService {
     }
 
     private void resetStats() {
-        videoCount = 0;
-        likeCount = 0;
-        followCount = 0;
-        commentCount = 0;
+        videoCount = 0; likeCount = 0; followCount = 0; commentCount = 0;
         sendStatsBroadcast();
     }
 
@@ -190,9 +187,7 @@ public class ScrollrService extends AccessibilityService {
                 countdownRemaining -= 1000;
                 if (countdownRemaining < 0) countdownRemaining = 0;
                 sendDurationBroadcast(countdownRemaining);
-                if (countdownRemaining > 0) {
-                    handler.postDelayed(this, 1000);
-                }
+                if (countdownRemaining > 0) handler.postDelayed(this, 1000);
             }
         };
         handler.postDelayed(countdownRunnable, 1000);
@@ -226,14 +221,14 @@ public class ScrollrService extends AccessibilityService {
             videoCount++;
             sendStatsBroadcast();
 
-            // Auto aksi
+            // Auto aksi — pakai content-desc yang sudah kita temukan!
             if (isAutoLikeEnabled()) doAutoLike();
             if (isAutoFollowEnabled()) doAutoFollow();
             if (isAutoShareEnabled()) doAutoShare();
             if (isAutoSaveEnabled()) doAutoSave();
             if (isAutoCommentEnabled()) handler.postDelayed(() -> doAutoComment(), 400);
 
-            // Scroll setelah aksi selesai
+            // Scroll setelah semua aksi
             handler.postDelayed(() -> {
                 if (!isRunning || isPaused) return;
                 isScrolling = true;
@@ -281,9 +276,7 @@ public class ScrollrService extends AccessibilityService {
                     return true;
                 }
             }
-        } catch (Exception e) {
-            Log.e(TAG, "checkLiveAd: " + e.getMessage());
-        }
+        } catch (Exception e) { Log.e(TAG, "checkLiveAd: " + e.getMessage()); }
         root.recycle();
         return false;
     }
@@ -325,26 +318,35 @@ public class ScrollrService extends AccessibilityService {
     }
 
     // ===================== AUTO LIKE =====================
+    // content-desc: "Sukai video. X suka"
 
     private void doAutoLike() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
-                TIKTOK_PACKAGE_ALT + ":id/like_btn",
-                TIKTOK_PACKAGE_ALT + ":id/iv_digg",
-                TIKTOK_PACKAGE_ALT + ":id/btn_like",
-                TIKTOK_PACKAGE + ":id/like_btn",
-                TIKTOK_PACKAGE + ":id/iv_digg",
-            };
-            for (String id : ids) {
-                List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByViewId(id);
-                if (nodes != null && !nodes.isEmpty()) {
-                    nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            // Cari by content-desc "Sukai video"
+            List<AccessibilityNodeInfo> nodes =
+                root.findAccessibilityNodeInfosByText("Sukai video");
+            if (nodes != null && !nodes.isEmpty()) {
+                for (AccessibilityNodeInfo node : nodes) {
+                    CharSequence desc = node.getContentDescription();
+                    if (desc != null && desc.toString().contains("Sukai video")) {
+                        node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                        likeCount++;
+                        sendStatsBroadcast();
+                        Log.i(TAG, "Auto liked! total: " + likeCount);
+                        break;
+                    }
+                }
+            }
+            // Fallback: cari "Suka"
+            if (nodes == null || nodes.isEmpty()) {
+                List<AccessibilityNodeInfo> sukaNodes =
+                    root.findAccessibilityNodeInfosByText("Suka");
+                if (sukaNodes != null && !sukaNodes.isEmpty()) {
+                    sukaNodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
                     likeCount++;
                     sendStatsBroadcast();
-                    break;
                 }
             }
         } catch (Exception e) { Log.e(TAG, "autoLike: " + e.getMessage()); }
@@ -352,27 +354,29 @@ public class ScrollrService extends AccessibilityService {
     }
 
     // ===================== AUTO FOLLOW =====================
+    // content-desc: "Ikuti [nama]"
 
     private void doAutoFollow() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
-                TIKTOK_PACKAGE_ALT + ":id/follow_btn",
-                TIKTOK_PACKAGE_ALT + ":id/btn_follow",
-                TIKTOK_PACKAGE + ":id/follow_btn",
-                TIKTOK_PACKAGE + ":id/btn_follow",
-            };
-            for (String id : ids) {
-                List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByViewId(id);
-                if (nodes != null && !nodes.isEmpty()) {
-                    AccessibilityNodeInfo node = nodes.get(0);
+            // Cari tombol "Ikuti" — bukan "Mengikuti"
+            List<AccessibilityNodeInfo> nodes =
+                root.findAccessibilityNodeInfosByText("Ikuti");
+            if (nodes != null) {
+                for (AccessibilityNodeInfo node : nodes) {
                     CharSequence desc = node.getContentDescription();
-                    if (desc != null && !desc.toString().toLowerCase().contains("following")) {
+                    String descStr = desc != null ? desc.toString() : "";
+                    CharSequence text = node.getText();
+                    String textStr = text != null ? text.toString() : "";
+
+                    // Pastikan "Ikuti" bukan "Mengikuti"
+                    if ((descStr.startsWith("Ikuti ") || textStr.equals("Ikuti"))
+                        && !descStr.contains("Mengikuti")) {
                         node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                         followCount++;
                         sendStatsBroadcast();
+                        Log.i(TAG, "Auto followed! total: " + followCount);
                         break;
                     }
                 }
@@ -382,26 +386,18 @@ public class ScrollrService extends AccessibilityService {
     }
 
     // ===================== AUTO COMMENT =====================
+    // content-desc: "Baca atau tambahkan komentar. X komentar"
 
     private void doAutoComment() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
-                TIKTOK_PACKAGE_ALT + ":id/comment_btn",
-                TIKTOK_PACKAGE_ALT + ":id/btn_comment",
-                TIKTOK_PACKAGE_ALT + ":id/iv_comment",
-                TIKTOK_PACKAGE + ":id/comment_btn",
-                TIKTOK_PACKAGE + ":id/btn_comment",
-            };
-            for (String id : ids) {
-                List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByViewId(id);
-                if (nodes != null && !nodes.isEmpty()) {
-                    nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                    handler.postDelayed(() -> typeComment(), 1000);
-                    break;
-                }
+            List<AccessibilityNodeInfo> nodes =
+                root.findAccessibilityNodeInfosByText("Baca atau tambahkan komentar");
+            if (nodes != null && !nodes.isEmpty()) {
+                nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                handler.postDelayed(() -> typeComment(), 1200);
+                Log.i(TAG, "Comment button tapped");
             }
         } catch (Exception e) { Log.e(TAG, "autoComment: " + e.getMessage()); }
         root.recycle();
@@ -411,14 +407,18 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
+            // Cari input field komentar
+            String[] inputIds = {
                 TIKTOK_PACKAGE_ALT + ":id/comment_edit_text",
                 TIKTOK_PACKAGE_ALT + ":id/et_comment",
+                TIKTOK_PACKAGE_ALT + ":id/input",
                 TIKTOK_PACKAGE + ":id/comment_edit_text",
                 TIKTOK_PACKAGE + ":id/et_comment",
             };
             String comment = getRandomComment();
-            for (String id : ids) {
+            boolean typed = false;
+
+            for (String id : inputIds) {
                 List<AccessibilityNodeInfo> nodes =
                     root.findAccessibilityNodeInfosByViewId(id);
                 if (nodes != null && !nodes.isEmpty()) {
@@ -426,34 +426,62 @@ public class ScrollrService extends AccessibilityService {
                     input.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
                     Bundle args = new Bundle();
                     args.putCharSequence(
-                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        comment);
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, comment);
                     input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-                    handler.postDelayed(() -> tapSend(), 500);
-                    commentCount++;
-                    sendStatsBroadcast();
+                    typed = true;
                     break;
                 }
             }
+
+            // Fallback: cari EditText by class
+            if (!typed) {
+                typed = findAndTypeInEditText(root, comment);
+            }
+
+            if (typed) {
+                handler.postDelayed(() -> tapSend(), 600);
+                commentCount++;
+                sendStatsBroadcast();
+                Log.i(TAG, "Comment typed: " + comment);
+            }
         } catch (Exception e) { Log.e(TAG, "typeComment: " + e.getMessage()); }
         root.recycle();
+    }
+
+    private boolean findAndTypeInEditText(AccessibilityNodeInfo node, String text) {
+        if (node == null) return false;
+        if ("android.widget.EditText".equals(node.getClassName() != null
+            ? node.getClassName().toString() : "")) {
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+            Bundle args = new Bundle();
+            args.putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+            return true;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            boolean result = findAndTypeInEditText(child, text);
+            if (child != null) child.recycle();
+            if (result) return true;
+        }
+        return false;
     }
 
     private void tapSend() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
-                TIKTOK_PACKAGE_ALT + ":id/btn_send",
-                TIKTOK_PACKAGE_ALT + ":id/send_btn",
-                TIKTOK_PACKAGE + ":id/btn_send",
-                TIKTOK_PACKAGE + ":id/send_btn",
-            };
-            for (String id : ids) {
+            // Cari tombol send
+            String[] sendTexts = {"Kirim", "Send", "Posting"};
+            for (String sendText : sendTexts) {
                 List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByViewId(id);
+                    root.findAccessibilityNodeInfosByText(sendText);
                 if (nodes != null && !nodes.isEmpty()) {
                     nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    Log.i(TAG, "Comment sent!");
+                    // Tutup komentar
+                    handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 500);
                     break;
                 }
             }
@@ -462,26 +490,18 @@ public class ScrollrService extends AccessibilityService {
     }
 
     // ===================== AUTO SHARE =====================
+    // content-desc: "Bagikan video. X kali dibagikan"
 
     private void doAutoShare() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
-                TIKTOK_PACKAGE_ALT + ":id/share_btn",
-                TIKTOK_PACKAGE_ALT + ":id/btn_share",
-                TIKTOK_PACKAGE_ALT + ":id/iv_share",
-                TIKTOK_PACKAGE + ":id/share_btn",
-                TIKTOK_PACKAGE + ":id/btn_share",
-            };
-            for (String id : ids) {
-                List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByViewId(id);
-                if (nodes != null && !nodes.isEmpty()) {
-                    nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                    handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 1000);
-                    break;
-                }
+            List<AccessibilityNodeInfo> nodes =
+                root.findAccessibilityNodeInfosByText("Bagikan video");
+            if (nodes != null && !nodes.isEmpty()) {
+                nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                Log.i(TAG, "Auto shared!");
+                handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 1200);
             }
         } catch (Exception e) { Log.e(TAG, "autoShare: " + e.getMessage()); }
         root.recycle();
@@ -493,19 +513,12 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            String[] ids = {
-                TIKTOK_PACKAGE_ALT + ":id/share_btn",
-                TIKTOK_PACKAGE_ALT + ":id/btn_share",
-                TIKTOK_PACKAGE + ":id/share_btn",
-            };
-            for (String id : ids) {
-                List<AccessibilityNodeInfo> nodes =
-                    root.findAccessibilityNodeInfosByViewId(id);
-                if (nodes != null && !nodes.isEmpty()) {
-                    nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                    handler.postDelayed(() -> tapSaveButton(), 1000);
-                    break;
-                }
+            // Buka share sheet dulu
+            List<AccessibilityNodeInfo> shareNodes =
+                root.findAccessibilityNodeInfosByText("Bagikan video");
+            if (shareNodes != null && !shareNodes.isEmpty()) {
+                shareNodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                handler.postDelayed(() -> tapSaveButton(), 1200);
             }
         } catch (Exception e) { Log.e(TAG, "autoSave: " + e.getMessage()); }
         root.recycle();
@@ -515,13 +528,17 @@ public class ScrollrService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         try {
-            List<AccessibilityNodeInfo> nodes =
-                root.findAccessibilityNodeInfosByText("Save video");
-            if (nodes == null || nodes.isEmpty())
-                nodes = root.findAccessibilityNodeInfosByText("Simpan video");
-            if (nodes != null && !nodes.isEmpty())
-                nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-            handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 500);
+            String[] saveTexts = {"Simpan video", "Save video", "Unduh", "Download"};
+            for (String saveText : saveTexts) {
+                List<AccessibilityNodeInfo> nodes =
+                    root.findAccessibilityNodeInfosByText(saveText);
+                if (nodes != null && !nodes.isEmpty()) {
+                    nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    Log.i(TAG, "Auto saved!");
+                    break;
+                }
+            }
+            handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 600);
         } catch (Exception e) { Log.e(TAG, "tapSave: " + e.getMessage()); }
         root.recycle();
     }
@@ -534,9 +551,7 @@ public class ScrollrService extends AccessibilityService {
             if (v == null) return;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 v.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE));
-            } else {
-                v.vibrate(50);
-            }
+            } else { v.vibrate(50); }
         } catch (Exception e) { Log.e(TAG, "haptic: " + e.getMessage()); }
     }
 
@@ -577,11 +592,9 @@ public class ScrollrService extends AccessibilityService {
         if (!isNightModeEnabled()) return true;
         try {
             int start = Integer.parseInt(PreferenceManager
-                .getDefaultSharedPreferences(this)
-                .getString("activeHourStart", "8"));
+                .getDefaultSharedPreferences(this).getString("activeHourStart", "8"));
             int end = Integer.parseInt(PreferenceManager
-                .getDefaultSharedPreferences(this)
-                .getString("activeHourEnd", "22"));
+                .getDefaultSharedPreferences(this).getString("activeHourEnd", "22"));
             int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
             return hour >= start && hour < end;
         } catch (Exception e) { return true; }
@@ -606,66 +619,47 @@ public class ScrollrService extends AccessibilityService {
 
     private long getScrollSpeedFromPrefs() {
         try { return Long.parseLong(PreferenceManager
-            .getDefaultSharedPreferences(this)
-            .getString("scrollSpeed", "15000"));
+            .getDefaultSharedPreferences(this).getString("scrollSpeed", "15000"));
         } catch (Exception e) { return 15000L; }
     }
-
     private long getSwipeSpeedFromPrefs() {
         try { return Long.parseLong(PreferenceManager
-            .getDefaultSharedPreferences(this)
-            .getString("swipeSpeed", "300"));
+            .getDefaultSharedPreferences(this).getString("swipeSpeed", "300"));
         } catch (Exception e) { return 300L; }
     }
-
     private long getExtraDelayFromPrefs() {
         try { return Long.parseLong(PreferenceManager
-            .getDefaultSharedPreferences(this)
-            .getString("extraDelay", "0"));
+            .getDefaultSharedPreferences(this).getString("extraDelay", "0"));
         } catch (Exception e) { return 0L; }
     }
-
     private boolean isSkipLiveEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipLive", true);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipLive", true); }
     private boolean isSkipAdsEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipAds", true);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("skipAds", true); }
     private boolean isAutoLikeEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoLike", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoLike", false); }
     private boolean isAutoFollowEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoFollow", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoFollow", false); }
     private boolean isAutoCommentEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoComment", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoComment", false); }
     private boolean isAutoShareEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoShare", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoShare", false); }
     private boolean isAutoSaveEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoSave", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("autoSave", false); }
     private boolean isHapticEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("hapticFeedback", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("hapticFeedback", false); }
     private boolean isNightModeEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("nightMode", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("nightMode", false); }
     private boolean isLimitVideosEnabled() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("limitVideos", false);
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getBoolean("limitVideos", false); }
     private int getMaxVideos() {
         try { return Integer.parseInt(PreferenceManager
             .getDefaultSharedPreferences(this).getString("maxVideos", "50"));
-        } catch (Exception e) { return 50; }
-    }
+        } catch (Exception e) { return 50; } }
     private String getBlacklistWords() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getString("blacklistWords", "");
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getString("blacklistWords", ""); }
     private String getWhitelistWords() {
-        return PreferenceManager.getDefaultSharedPreferences(this).getString("whitelistWords", "");
-    }
+        return PreferenceManager.getDefaultSharedPreferences(this).getString("whitelistWords", ""); }
 
     // ===================== NOTIFICATION =====================
 
@@ -698,14 +692,12 @@ public class ScrollrService extends AccessibilityService {
         i.putExtra("status", status);
         sendBroadcast(i);
     }
-
     private void sendDurationBroadcast(long ms) {
         Intent i = new Intent("com.suyashsrijan.autoscrollr.STATUS_UPDATE");
         i.putExtra("status", "duration");
         i.putExtra("duration_ms", ms);
         sendBroadcast(i);
     }
-
     private void sendStatsBroadcast() {
         Intent i = new Intent("com.suyashsrijan.autoscrollr.STATUS_UPDATE");
         i.putExtra("status", "stats");
