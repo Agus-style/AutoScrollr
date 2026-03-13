@@ -10,7 +10,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.graphics.Path;
 import android.os.Build;
 import android.os.Handler;
@@ -39,7 +38,7 @@ public class ScrollrService extends AccessibilityService {
     private Runnable scrollRunnable;
     private boolean isRunning = false;
     private boolean isPaused = false;
-    private long currentVideoDuration = DEFAULT_VIDEO_DURATION;
+    private long lastAutoScrollTime = 0;
 
     private BroadcastReceiver controlReceiver = new BroadcastReceiver() {
         @Override
@@ -69,18 +68,51 @@ public class ScrollrService extends AccessibilityService {
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (!isRunning || isPaused) return;
-        String pkg = event.getPackageName() != null ? event.getPackageName().toString() : "";
+
+        String pkg = event.getPackageName() != null
+            ? event.getPackageName().toString() : "";
         if (!pkg.equals(TIKTOK_PACKAGE) && !pkg.equals(TIKTOK_PACKAGE_ALT)) return;
-        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
-            event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+
+        // Deteksi user seek/scroll manual
+        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_SCROLLED ||
+            event.getEventType() == AccessibilityEvent.TYPE_VIEW_SELECTED) {
+
+            long now = System.currentTimeMillis();
+            // Pastikan bukan dari auto scroll kita sendiri
+            if (now - lastAutoScrollTime > 1500) {
+                // Hitung sisa durasi video setelah di-seek
+                long remaining = getRemainingDuration();
+                if (remaining > 0 && remaining < 180000) {
+                    Log.i(TAG, "User seeked - remaining: " + remaining + "ms");
+                    sendStatusBroadcast("user_seeked");
+                    // Reset timer dengan sisa durasi
+                    scheduleNextScroll(remaining + getExtraDelayFromPrefs());
+                }
+            }
+        }
+
+        // Deteksi scroll manual (swipe ke video baru)
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            long now = System.currentTimeMillis();
+            if (now - lastAutoScrollTime > 1500) {
+                Log.i(TAG, "User manually scrolled to new video");
+                // Reset timer untuk video baru
+                handler.postDelayed(() -> {
+                    long duration = detectVideoDuration();
+                    scheduleNextScroll(duration + getExtraDelayFromPrefs());
+                    sendDurationBroadcast(duration);
+                }, 500);
+            }
+            checkAndSkipLive();
+        }
+
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             checkAndSkipLive();
         }
     }
 
     @Override
-    public void onInterrupt() {
-        stopAutoScroll();
-    }
+    public void onInterrupt() { stopAutoScroll(); }
 
     @Override
     public void onDestroy() {
@@ -129,6 +161,7 @@ public class ScrollrService extends AccessibilityService {
             @Override
             public void run() {
                 if (!isRunning || isPaused) return;
+
                 if (isSkipLiveEnabled() && isCurrentlyLive()) {
                     Log.i(TAG, "LIVE detected - skipping");
                     sendStatusBroadcast("live_skipped");
@@ -136,14 +169,17 @@ public class ScrollrService extends AccessibilityService {
                     scheduleNextScroll(LIVE_CHECK_DELAY + SCROLL_ANIMATION_DURATION);
                     return;
                 }
+
                 long duration = detectVideoDuration();
-                currentVideoDuration = duration;
                 Log.i(TAG, "Video duration: " + duration + "ms");
                 sendDurationBroadcast(duration);
+
                 long extraDelay = getExtraDelayFromPrefs();
                 scheduleNextScroll(duration + SCROLL_ANIMATION_DURATION + extraDelay);
+
                 handler.postDelayed(() -> {
                     if (!isRunning || isPaused) return;
+                    lastAutoScrollTime = System.currentTimeMillis();
                     performSwipeUp();
                     sendStatusBroadcast("scrolled");
                 }, duration);
@@ -152,17 +188,58 @@ public class ScrollrService extends AccessibilityService {
         handler.postDelayed(scrollRunnable, delayMs);
     }
 
+    // Hitung sisa durasi video berdasarkan posisi progress bar sekarang
+    private long getRemainingDuration() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return -1;
+
+        try {
+            String[] ids = {
+                TIKTOK_PACKAGE + ":id/progress_bar",
+                TIKTOK_PACKAGE + ":id/video_progress",
+                TIKTOK_PACKAGE + ":id/seek_bar",
+            };
+            for (String resId : ids) {
+                List<AccessibilityNodeInfo> bars =
+                    root.findAccessibilityNodeInfosByViewId(resId);
+                if (bars != null && !bars.isEmpty()) {
+                    AccessibilityNodeInfo bar = bars.get(0);
+                    if (bar.getRangeInfo() != null) {
+                        float current = bar.getRangeInfo().getCurrent();
+                        float max     = bar.getRangeInfo().getMax();
+                        if (max > 0) {
+                            // Hitung sisa dalam ms
+                            float remaining = max - current;
+                            long ms = remaining <= 600
+                                ? (long)(remaining * 1000)
+                                : (long) remaining;
+                            root.recycle();
+                            return Math.max(ms, 500); // minimal 0.5 detik
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "getRemainingDuration error: " + e.getMessage());
+        }
+
+        root.recycle();
+        return -1;
+    }
+
     private boolean isCurrentlyLive() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return false;
         try {
             String[] liveKeywords = {"LIVE", "Live", "SIARAN LANGSUNG"};
             for (String keyword : liveKeywords) {
-                List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(keyword);
+                List<AccessibilityNodeInfo> nodes =
+                    root.findAccessibilityNodeInfosByText(keyword);
                 if (nodes != null) {
                     for (AccessibilityNodeInfo node : nodes) {
                         CharSequence text = node.getText();
-                        if (text != null && text.toString().trim().equalsIgnoreCase("LIVE")) {
+                        if (text != null &&
+                            text.toString().trim().equalsIgnoreCase("LIVE")) {
                             root.recycle();
                             return true;
                         }
@@ -212,7 +289,8 @@ public class ScrollrService extends AccessibilityService {
             TIKTOK_PACKAGE + ":id/seek_bar",
         };
         for (String resId : ids) {
-            List<AccessibilityNodeInfo> bars = root.findAccessibilityNodeInfosByViewId(resId);
+            List<AccessibilityNodeInfo> bars =
+                root.findAccessibilityNodeInfosByViewId(resId);
             if (bars != null && !bars.isEmpty()) {
                 AccessibilityNodeInfo bar = bars.get(0);
                 if (bar.getRangeInfo() != null) {
@@ -235,7 +313,8 @@ public class ScrollrService extends AccessibilityService {
             if (s.matches("\\d+:\\d{2}")) {
                 try {
                     String[] parts = s.split(":");
-                    long ms = (Long.parseLong(parts[0]) * 60 + Long.parseLong(parts[1])) * 1000L;
+                    long ms = (Long.parseLong(parts[0]) * 60
+                        + Long.parseLong(parts[1])) * 1000L;
                     if (ms >= 3000 && ms <= 180000) return ms;
                 } catch (NumberFormatException ignored) {}
             }
@@ -256,20 +335,23 @@ public class ScrollrService extends AccessibilityService {
         path.moveTo(w / 2, (int)(h * 0.75));
         path.lineTo(w / 2, (int)(h * 0.25));
         GestureDescription gesture = new GestureDescription.Builder()
-            .addStroke(new GestureDescription.StrokeDescription(path, 0, SCROLL_ANIMATION_DURATION))
+            .addStroke(new GestureDescription.StrokeDescription(
+                path, 0, SCROLL_ANIMATION_DURATION))
             .build();
         dispatchGesture(gesture, null, null);
     }
 
     private long getDefaultDurationFromPrefs() {
         try { return Long.parseLong(PreferenceManager
-            .getDefaultSharedPreferences(this).getString("defaultVideoDuration", "15000"));
+            .getDefaultSharedPreferences(this)
+            .getString("defaultVideoDuration", "15000"));
         } catch (Exception e) { return DEFAULT_VIDEO_DURATION; }
     }
 
     private long getExtraDelayFromPrefs() {
         try { return Long.parseLong(PreferenceManager
-            .getDefaultSharedPreferences(this).getString("extraDelay", "500"));
+            .getDefaultSharedPreferences(this)
+            .getString("extraDelay", "500"));
         } catch (Exception e) { return 500L; }
     }
 
@@ -281,13 +363,15 @@ public class ScrollrService extends AccessibilityService {
     public void showNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, "TikTok AutoScrollr", NotificationManager.IMPORTANCE_LOW);
+                CHANNEL_ID, "TikTok AutoScrollr",
+                NotificationManager.IMPORTANCE_LOW);
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(channel);
         }
         Intent notifIntent = new Intent(this, MainActivity.class);
         PendingIntent pi = PendingIntent.getActivity(this, 0, notifIntent,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_IMMUTABLE : 0);
         Notification n = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("TikTok AutoScrollr")
             .setStyle(new NotificationCompat.BigTextStyle()
