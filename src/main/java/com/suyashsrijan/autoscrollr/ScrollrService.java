@@ -87,13 +87,25 @@ public class ScrollrService extends AccessibilityService {
 
         int type = event.getEventType();
 
-        // Window state changed = halaman baru / video baru
+        // DEBUG — log semua event untuk deteksi durasi
+        // Hapus blok ini setelah ketemu event yang tepat
+        if (type == AccessibilityEvent.TYPE_VIEW_SELECTED
+                || type == AccessibilityEvent.TYPE_VIEW_SCROLLED
+                || type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            int cur  = event.getCurrentItemIndex();
+            int cnt  = event.getItemCount();
+            CharSequence cls = event.getClassName();
+            CharSequence txt = event.getText().isEmpty() ? "" : event.getText().get(0);
+            Log.d(TAG, "EVT type=" + type
+                + " class=" + cls
+                + " cur=" + cur + " count=" + cnt
+                + " text=" + txt);
+        }
+
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             handler.postDelayed(() -> checkAndSkipLiveOrAd(), 600);
         }
 
-        // Content changed = UI update (progress bar bergerak, dll)
-        // Debounce: hanya cancel pollDurationRunnable, JANGAN cancel timerRunnable
         if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             if (pollDurationRunnable != null)
                 handler.removeCallbacks(pollDurationRunnable);
@@ -203,13 +215,22 @@ public class ScrollrService extends AccessibilityService {
      * Kalau mode fixed, pakai scrollSpeed biasa.
      */
     private long getRandomDuration() {
-        if (!isRandomDurationEnabled()) {
-            return getScrollSpeedFromPrefs();
+        long min, max;
+        if (isRandomDurationEnabled()) {
+            min = getMinScrollSpeed();
+            max = getMaxScrollSpeed();
+        } else {
+            long fixed = getScrollSpeedFromPrefs();
+            // Guard: minimal 3 detik, maksimal 10 menit
+            if (fixed < 3000) fixed = 15000;
+            if (fixed > 600000) fixed = 15000;
+            return fixed;
         }
-        long min = getMinScrollSpeed();
-        long max = getMaxScrollSpeed();
-        if (min >= max) return min;
-        return min + (long)(random.nextDouble() * (max - min));
+        if (min < 3000) min = 3000;
+        if (max < min) max = min + 10000;
+        long result = min + (long)(random.nextDouble() * (max - min));
+        Log.i(TAG, "Random duration: " + result + "ms (min=" + min + " max=" + max + ")");
+        return result;
     }
 
     private void startCountdown() {
@@ -292,22 +313,45 @@ public class ScrollrService extends AccessibilityService {
         try {
             List<String> texts = new ArrayList<>();
             collectTexts(root, texts);
+
+            // Deteksi foto/carousel — ada dot indicator di bawah
+            // TikTok render "X/Y" untuk carousel, skip cepat
+            boolean isCarousel = false;
+            for (String text : texts) {
+                String t = text.trim();
+                // Format carousel: "1/6", "2/5", dll
+                if (t.matches("\\d+/\\d+")) {
+                    isCarousel = true;
+                    Log.i(TAG, "Carousel detected: " + t);
+                    break;
+                }
+            }
+            if (isCarousel) {
+                sendStatusBroadcast("carousel_skipped");
+                root.recycle();
+                cancelAll();
+                doScroll();
+                handler.postDelayed(() -> startTimer(), 1500);
+                return true;
+            }
+
             for (String text : texts) {
                 String t = text.trim().toLowerCase();
 
-                if (isSkipLiveEnabled() && (
-                        t.equals("live") ||
-                        t.contains("sedang live") ||
-                        t.contains("is live") ||
-                        t.startsWith("live ") ||
-                        t.endsWith(" live"))) {
-                    Log.i(TAG, "LIVE detected: [" + text + "]");
-                    sendStatusBroadcast("live_skipped");
-                    root.recycle();
-                    cancelAll();
-                    doScroll();
-                    handler.postDelayed(() -> startTimer(), 1500);
-                    return true;
+                // Deteksi LIVE — harus lebih spesifik
+                // Hindari false positive dari navbar "LIVE" tab
+                // LIVE asli biasanya punya indikator tambahan
+                if (isSkipLiveEnabled()) {
+                    // Cek node LIVE yang clickable dan bukan navbar
+                    if (isRealLiveStream(root)) {
+                        Log.i(TAG, "LIVE stream detected - skipping");
+                        sendStatusBroadcast("live_skipped");
+                        root.recycle();
+                        cancelAll();
+                        doScroll();
+                        handler.postDelayed(() -> startTimer(), 1500);
+                        return true;
+                    }
                 }
 
                 if (isSkipAdsEnabled() && (
@@ -329,6 +373,31 @@ public class ScrollrService extends AccessibilityService {
         } catch (Exception e) { Log.e(TAG, "checkLiveAd: " + e.getMessage()); }
         root.recycle();
         return false;
+    }
+
+    /**
+     * Deteksi LIVE stream yang sebenarnya — bukan tombol tab navbar.
+     * LIVE stream asli punya: tombol "Ikut" atau "Hadiah" atau indikator penonton.
+     */
+    private boolean isRealLiveStream(AccessibilityNodeInfo root) {
+        try {
+            List<String> texts = new ArrayList<>();
+            collectTexts(root, texts);
+            boolean hasLive = false;
+            boolean hasLiveIndicator = false;
+            for (String text : texts) {
+                String t = text.trim().toLowerCase();
+                if (t.equals("live")) hasLive = true;
+                // Indikator LIVE asli: ada penonton, tombol hadiah, dll
+                if (t.contains("penonton") || t.contains("viewers") ||
+                    t.contains("hadiah") || t.contains("gift") ||
+                    t.contains("sedang live") || t.contains("is live") ||
+                    t.matches("\\d+(\\.\\d+)?[rk]b?\\s*(penonton|viewers).*")) {
+                    hasLiveIndicator = true;
+                }
+            }
+            return hasLive && hasLiveIndicator;
+        } catch (Exception e) { return false; }
     }
 
     // ===================== BLACKLIST & WHITELIST =====================
