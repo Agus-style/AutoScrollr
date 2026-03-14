@@ -52,6 +52,12 @@ public class ScrollrService extends AccessibilityService {
     private Random random = new Random();
     private Runnable pollDurationRunnable;
 
+    // Deteksi loop video
+    private long videoStartTime = 0;       // kapan video mulai diputar
+    private long lastContentChangeTime = 0; // timestamp event content changed terakhir
+    private int contentChangeCount = 0;     // jumlah event dalam window waktu tertentu
+    private long burstWindowStart = 0;      // awal window burst detection
+
     private BroadcastReceiver controlReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -87,34 +93,86 @@ public class ScrollrService extends AccessibilityService {
 
         int type = event.getEventType();
 
-        // DEBUG — log semua event untuk deteksi durasi
-        // Hapus blok ini setelah ketemu event yang tepat
-        if (type == AccessibilityEvent.TYPE_VIEW_SELECTED
-                || type == AccessibilityEvent.TYPE_VIEW_SCROLLED
-                || type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            int cur  = event.getCurrentItemIndex();
-            int cnt  = event.getItemCount();
-            CharSequence cls = event.getClassName();
-            CharSequence txt = event.getText().isEmpty() ? "" : event.getText().get(0);
-            Log.d(TAG, "EVT type=" + type
-                + " class=" + cls
-                + " cur=" + cur + " count=" + cnt
-                + " text=" + txt);
-        }
-
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // Reset videoStartTime saat halaman/video baru
+            videoStartTime = System.currentTimeMillis();
+            contentChangeCount = 0;
+            burstWindowStart = videoStartTime;
             handler.postDelayed(() -> checkAndSkipLiveOrAd(), 600);
         }
 
         if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            long now = System.currentTimeMillis();
+
+            // Hitung burst — banyak event dalam waktu singkat = video loop/restart
+            if (now - burstWindowStart < 500) {
+                contentChangeCount++;
+            } else {
+                // Reset window baru
+                burstWindowStart = now;
+                contentChangeCount = 1;
+            }
+
+            // Burst ≥ 5 event dalam 500ms = indikasi video restart/loop
+            // Dan video sudah jalan minimal 3 detik (hindari false positive saat load)
+            if (contentChangeCount >= 5
+                    && videoStartTime > 0
+                    && (now - videoStartTime) > 3000
+                    && !isScrolling
+                    && timerRunnable != null) {
+                Log.i(TAG, "Video loop detected! elapsed=" + (now - videoStartTime) + "ms");
+                contentChangeCount = 0;
+                burstWindowStart = now;
+                // Scroll sekarang — video sudah selesai satu putaran
+                cancelAll();
+                doActionsAndScroll();
+                return;
+            }
+
+            // Debounce check live/iklan
             if (pollDurationRunnable != null)
                 handler.removeCallbacks(pollDurationRunnable);
-            pollDurationRunnable = () -> {
-                checkAndSkipLiveOrAd();
-                trySmartDurationCorrect();
-            };
-            handler.postDelayed(pollDurationRunnable, 1000);
+            pollDurationRunnable = () -> checkAndSkipLiveOrAd();
+            handler.postDelayed(pollDurationRunnable, 800);
         }
+    }
+
+    /**
+     * Jalankan auto-action lalu scroll — dipakai saat loop video terdeteksi
+     * maupun saat timer normal habis.
+     */
+    private void doActionsAndScroll() {
+        if (!isRunning || isPaused) return;
+
+        if (isHapticEnabled()) doHaptic();
+        videoCount++;
+        sendStatsBroadcast();
+        videoStartTime = System.currentTimeMillis(); // reset untuk video berikutnya
+
+        long delay = 0;
+        if (isAutoLikeEnabled()) {
+            long d = delay; handler.postDelayed(() -> doAutoLike(), d); delay += 500; }
+        if (isAutoFollowEnabled()) {
+            long d = delay; handler.postDelayed(() -> doAutoFollow(), d); delay += 500; }
+        if (isAutoSaveEnabled()) {
+            long d = delay; handler.postDelayed(() -> doAutoSave(), d); delay += 2500;
+        } else if (isAutoShareEnabled()) {
+            long d = delay; handler.postDelayed(() -> doAutoShare(), d); delay += 2000; }
+        if (isAutoCommentEnabled()) {
+            long d = delay; handler.postDelayed(() -> doAutoComment(), d); delay += 3000; }
+
+        final long totalDelay = delay;
+        handler.postDelayed(() -> {
+            if (!isRunning || isPaused) return;
+            isScrolling = true;
+            lastScrollTime = System.currentTimeMillis();
+            sendStatusBroadcast("scrolled");
+            handler.postDelayed(() -> {
+                doScroll();
+                isScrolling = false;
+                handler.postDelayed(() -> startTimer(), 1000);
+            }, getExtraDelayFromPrefs());
+        }, totalDelay + 500);
     }
 
     @Override
@@ -268,39 +326,8 @@ public class ScrollrService extends AccessibilityService {
                 return;
             }
 
-            // Haptic
-            if (isHapticEnabled()) doHaptic();
-
-            // Hitung video
-            videoCount++;
-            sendStatsBroadcast();
-
-            // Auto aksi — pakai delay bertahap agar tidak bentrok
-            long delay = 0;
-            if (isAutoLikeEnabled()) {
-                long d = delay; handler.postDelayed(() -> doAutoLike(), d); delay += 500; }
-            if (isAutoFollowEnabled()) {
-                long d = delay; handler.postDelayed(() -> doAutoFollow(), d); delay += 500; }
-            if (isAutoSaveEnabled()) {
-                long d = delay; handler.postDelayed(() -> doAutoSave(), d); delay += 2500;
-            } else if (isAutoShareEnabled()) {
-                long d = delay; handler.postDelayed(() -> doAutoShare(), d); delay += 2000; }
-            if (isAutoCommentEnabled()) {
-                long d = delay; handler.postDelayed(() -> doAutoComment(), d); delay += 3000; }
-            final long totalDelay = delay;
-
-            // Scroll setelah semua aksi
-            handler.postDelayed(() -> {
-                if (!isRunning || isPaused) return;
-                isScrolling = true;
-                lastScrollTime = System.currentTimeMillis();
-                sendStatusBroadcast("scrolled");
-                handler.postDelayed(() -> {
-                    doScroll();
-                    isScrolling = false;
-                    handler.postDelayed(() -> startTimer(), 1000);
-                }, getExtraDelayFromPrefs());
-            }, totalDelay + 500);
+            timerRunnable = null; // tandai timer sudah fired
+            doActionsAndScroll();
         };
         handler.postDelayed(timerRunnable, delayMs);
     }
